@@ -1,11 +1,12 @@
 /* Réglages : produits & critères, partenaires, équipe, compte. */
 
-import { state, shell, go, loadRefs, logout } from './app.js';
+import { state, shell, go, back, loadRefs, logout } from './app.js';
 import { local, queue, sync } from './store.js';
 import { db, auth } from './supa.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
+import { fieldStatus } from './verdict.js';
 import { LANGS, builtinTranslation } from './report-pdf.js';
-import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS } from './pressure.js';
+import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS, LIMITS, clampP } from './pressure.js';
 import { PACKAGING_KINDS, TYPE_LIST, reportType, appliesTo, typesLabel } from './report-types.js';
 import { $, $$, esc, icon, toast, sheet, confirmSheet, getTheme, setTheme } from './ui.js';
 
@@ -26,7 +27,7 @@ export function renderSettings() {
       <button class="menu-item" data-go="#/settings/account"><span class="ic n">${icon('badge')}</span>
         <span class="tx"><b>Mon compte</b><span>${esc(state.profile?.email || '')}</span></span><span class="chev">›</span></button>
     </div>`,
-    { back: () => go('#/'),
+    { back: () => back('#/'),
       onMount() {
         $$('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
         $('#themeBtn').onclick = openTheme;
@@ -118,8 +119,13 @@ const readI18n = (el) => {
 /* ====================== PRODUITS & CRITÈRES ====================== */
 export function renderGroups() {
   shell('Produits & critères', `
-    <p class="muted" style="margin:0 0 12px">Chaque groupe porte sa propre grille. Ajoutez-en un pour couvrir
-    un nouveau fruit ou légume : la structure de contrôle est identique, seuls les critères changent.</p>
+    <div class="card pad" style="margin-bottom:12px">
+      <p style="margin:0 0 8px;font-size:13.5px"><b>Une grille par produit.</b> La grille, c'est la liste
+      de ce qu'on regarde pendant un contrôle — taches, température, matière sèche — avec, pour chacun,
+      à partir de quand ça pose problème.</p>
+      <p class="muted" style="margin:0;font-size:12.5px">Ouvrez un produit pour voir sa grille.
+      Tout y est modifiable, et chaque modification peut être annulée juste après.</p>
+    </div>
     <div class="list">
       ${state.groups.map(g => `
         <button class="rep" data-id="${esc(g.id)}">
@@ -133,7 +139,7 @@ export function renderGroups() {
       <button class="btn ghost" id="add">${icon('plus')} Nouveau groupe</button>
       <button class="btn ghost" id="restore">Restaurer les grilles par défaut</button>
     </div>`,
-    { back: () => go('#/settings'),
+    { back: () => back('#/settings'),
       onMount() {
         $$('[data-id]').forEach(b => b.onclick = () => go('#/settings/groups/' + b.dataset.id));
         $('#add').onclick = addGroup;
@@ -212,9 +218,10 @@ export function renderGroupEditor(id) {
         <div class="field"><label for="ps">Mesures / fruit</label>
           <input type="number" id="ps" min="1" step="1" value="${pr.sides}"></div>
         <div class="field"><label for="prf">Référence</label>
-          <input type="number" id="prf" step="0.1" value="${pr.ref}"></div>
+          <input type="number" id="prf" step="0.1" min="${LIMITS.min}" max="${LIMITS.max}" value="${pr.ref}"></div>
       </div>
-      <div class="hint">La référence sert au bouton de remplissage rapide et à la ligne repère du graphique.</div>
+      <div class="hint">La référence sert au bouton de remplissage rapide et à la ligne repère du graphique.
+        Le pénétromètre mesure de ${LIMITS.min} à ${LIMITS.max} ${esc(pr.unit)} : les valeurs sont bornées à cet intervalle.</div>
     </div>
 
     <div class="card pad" style="margin-top:12px">
@@ -232,7 +239,9 @@ export function renderGroupEditor(id) {
       </div>
     </div>
 
-    <h3 style="margin:18px 0 6px;font-size:15px">Sections et critères</h3>
+    <h3 style="margin:18px 0 6px;font-size:15px">La grille de contrôle</h3>
+    <p class="muted" style="margin:0 0 10px;font-size:12.5px">Les critères sont rangés par section.
+      Touchez un critère pour changer son barème ; touchez « Critère » pour en ajouter un.</p>
     <!-- On ne contrôle pas les mêmes choses à l'arrivée d'un conteneur
          et sur une chaîne de conditionnement. Ce filtre montre la
          grille telle qu'elle se présentera pour un type de rapport
@@ -262,7 +271,10 @@ export function renderGroupEditor(id) {
           <div class="btn-row" style="margin-top:10px">
             <button class="btn ghost sm" data-addf="${si}">${icon('plus')} Critère</button>
             <button class="btn ghost sm" data-editsec="${si}">${icon('edit')} Titre &amp; portée</button>
-            <button class="btn ghost sm" data-delsec="${si}">Supprimer</button>
+            ${gridType
+              ? `<button class="btn ghost sm" data-hidesec="${si}">Retirer de ${esc(reportType(gridType).short)}</button>
+                 <button class="btn ghost sm danger" data-delsec="${si}">Supprimer partout</button>`
+              : `<button class="btn ghost sm danger" data-delsec="${si}">Supprimer</button>`}
           </div>
         </div></details>`; }).join('')}
 
@@ -271,7 +283,7 @@ export function renderGroupEditor(id) {
       <button class="btn ghost danger" id="delg">Supprimer le groupe</button>
     </div>
     <div class="sticky-actions"><button class="btn block" id="save">Enregistrer</button></div>`,
-    { back: () => go('#/settings/groups'),
+    { back: () => back('#/settings/groups'),
       onMount() {
         $$('[data-tf]').forEach(c => c.onclick = () => {
           gridType = c.dataset.tf === gridType ? '' : c.dataset.tf;
@@ -282,10 +294,38 @@ export function renderGroupEditor(id) {
           editField(g, si, fi);
         });
         $$('[data-addf]').forEach(el => el.onclick = () => editField(g, +el.dataset.addf, -1));
-        $$('[data-delsec]').forEach(el => el.onclick = async () => {
-          if (!(await confirmSheet('Supprimer la section', 'Ses critères seront retirés de la grille.'))) return;
-          g.config.sections.splice(+el.dataset.delsec, 1);
+        /* Retirer une section d'un seul type de rapport : c'est le
+           geste que l'on cherche en vue filtrée. « Supprimer » à côté
+           efface partout, et le dit. */
+        $$('[data-hidesec]').forEach(el => el.onclick = async () => {
+          const sec = g.config.sections[+el.dataset.hidesec];
+          const keep = TYPE_LIST.map(T => T.id).filter(t => t !== gridType &&
+            (!Array.isArray(sec.types) || !sec.types.length || sec.types.includes(t)));
+          if (!keep.length) {
+            return toast("C'est son dernier type de rapport : supprimez-la plutôt.", 'err');
+          }
+          const before = structuredClone(sec.types);
+          sec.types = keep.length === TYPE_LIST.length ? undefined : keep;
           await saveGroup(g); renderGroupEditor(id);
+          toast(`« ${sec.label} » retirée de ${reportType(gridType).short}`, '',
+            { action: 'Annuler', onAction: async () => {
+                sec.types = before; await saveGroup(g); renderGroupEditor(id);
+              } });
+        });
+
+        $$('[data-delsec]').forEach(el => el.onclick = async () => {
+          const si = +el.dataset.delsec;
+          const sec = g.config.sections[si];
+          if (!(await confirmSheet('Supprimer la section',
+                `« ${sec.label} » et ses ${sec.fields.length} critères disparaissent de tous les types de rapport.`,
+                { okLabel: 'Supprimer partout' }))) return;
+          const copy = structuredClone(sec);
+          g.config.sections.splice(si, 1);
+          await saveGroup(g); renderGroupEditor(id);
+          toast('Section supprimée', '', { action: 'Annuler', onAction: async () => {
+            g.config.sections.splice(si, 0, copy);
+            await saveGroup(g); renderGroupEditor(id);
+          } });
         });
         $('#addsec').onclick = () => editSection(g, -1);
         $$('[data-editsec]').forEach(el => el.onclick = () => editSection(g, +el.dataset.editsec));
@@ -310,7 +350,7 @@ export function renderGroupEditor(id) {
           g.config.pressure = {
             fruits: Math.max(1, Number($('#pf').value) || pr.fruits),
             sides:  Math.max(1, Number($('#ps').value) || pr.sides),
-            ref:    Number($('#prf').value) || pr.ref,
+            ref:    clampP($('#prf').value) ?? pr.ref,
             unit:   pr.unit
           };
           await saveGroup(g);
@@ -328,9 +368,13 @@ function editSection(g, si) {
       <input type="text" id="sl" value="${esc(sec.label)}" placeholder="Ex. Troubles / Maladies"></div>
     ${typesBlock(sec)}
     ${i18nBlock(sec.label, sec.i18n)}
-    <button class="btn block" id="ok">${isNew ? 'Ajouter' : 'Enregistrer'}</button>`,
+    <div class="btn-row">
+      <button class="btn ghost" style="flex:1" id="cancel">Annuler</button>
+      <button class="btn" style="flex:2" id="ok">${isNew ? 'Ajouter' : 'Enregistrer'}</button>
+    </div>`,
     { onMount(el, close) {
         wireTypes(el);
+        el.querySelector('#cancel').onclick = () => close();
         el.querySelector('#ok').onclick = async () => {
           const label = el.querySelector('#sl').value.trim();
           if (!label) return toast('Donnez un titre', 'err');
@@ -342,91 +386,270 @@ function editSection(g, si) {
       } });
 }
 
+/* ======================= ÉDITEUR DE CRITÈRE =======================
+   Ce formulaire est rempli par un responsable qualité, pas par un
+   développeur. Trois principes :
+     — on nomme ce que la personne veut obtenir, jamais le mécanisme
+       interne ; « Gravité : majeur » devient « au-delà, c'est un
+       défaut majeur » ;
+     — le barème se lit comme une phrase, du conforme au non conforme,
+       et le dernier échelon est écrit noir sur blanc — c'est celui
+       qu'on ne voyait pas ;
+     — un champ d'essai donne le verdict en direct sur une valeur que
+       l'on tape : plus sûr que n'importe quelle explication.
+   ------------------------------------------------------------------ */
+
+/* Les quatre façons de noter un critère, décrites par leur usage. */
+const FIELD_KINDS = [
+  ['pct',    'Un pourcentage de défaut', 'Part des fruits touchés : taches, chocs, pourriture…'],
+  ['num',    'Une mesure chiffrée',      'Température, matière sèche, Brix, dureté…'],
+  ['choice', 'Un choix dans une liste',  'Bonne / Acceptable / Mauvaise'],
+  ['bool',   'Conforme ou non conforme', 'Une simple réponse oui / non']
+];
+
+/* Ce que devient un dépassement. Le troisième échelon — la
+   non-conformité directe — est le seul qui fasse basculer le rapport,
+   et il doit se voir. */
+const OUTCOMES = {
+  mineur:   ['Défaut mineur',            'Passe en orange, le rapport reste acceptable'],
+  majeur:   ['Défaut majeur',            'Passe en rouge et pèse sur la qualité'],
+  critique: ['Non conforme directement', 'Le rapport entier bascule en Non Conforme']
+};
+/* Sur un pourcentage et sur une liste de choix, « mineur » et
+   « majeur » produisent exactement le même effet : on n'affiche donc
+   pas deux portes identiques. */
+const outcomesFor = (type) => (type === 'pct' || type === 'choice')
+  ? ['majeur', 'critique'] : ['mineur', 'majeur', 'critique'];
+
+function outcomeBlock(type, sev, kindLabel) {
+  const list = outcomesFor(type);
+  const cur = list.includes(sev) ? sev : list[0];
+  return `<div class="field"><label>${esc(kindLabel)}</label>
+    <div class="olist" id="outBox">
+      ${list.map(k => `<button type="button" class="obtn" data-o="${k}" aria-pressed="${k === cur}">
+        <b>${OUTCOMES[k][0]}</b><span>${OUTCOMES[k][1]}</span></button>`).join('')}
+    </div></div>`;
+}
+
+const STATUS_WORDS = [['ok', 'Conforme'], ['warn', 'À surveiller'], ['fail', 'Non conforme']];
+
 function editField(g, si, fi) {
   const sec = g.config.sections[si];
   const f = fi >= 0 ? structuredClone(sec.fields[fi])
     : { key: '', label: '', type: 'pct', severity: 'majeur',
         types: gridType ? [gridType] : undefined };
   const isNew = fi < 0;
+  let type = f.type || 'pct';
+  let sev  = f.severity || 'majeur';
+  let opts = structuredClone(f.options || [{ v: 'Bonne', s: 'ok' }, { v: 'Acceptable', s: 'warn' }, { v: 'Mauvaise', s: 'fail' }]);
 
   sheet(isNew ? 'Nouveau critère' : 'Modifier le critère', `
-    <div class="field"><label for="cl">Libellé</label><input type="text" id="cl" value="${esc(f.label)}"></div>
-    <div class="field"><label for="ct">Type</label>
-      <select id="ct">
-        <option value="pct"${f.type === 'pct' ? ' selected' : ''}>Pourcentage de défaut</option>
-        <option value="num"${f.type === 'num' ? ' selected' : ''}>Mesure numérique</option>
-        <option value="choice"${f.type === 'choice' ? ' selected' : ''}>Liste de choix</option>
-        <option value="bool"${f.type === 'bool' ? ' selected' : ''}>Conforme / Non conforme</option>
-      </select></div>
-    <div class="field"><label for="cu">Unité</label><input type="text" id="cu" value="${esc(f.unit || '')}" placeholder="%, kg, °C, °Bx…"></div>
-    <div class="field"><label for="cs">Gravité</label>
-      <select id="cs">
-        <option value="mineur"${f.severity === 'mineur' ? ' selected' : ''}>Mineur — passe en orange</option>
-        <option value="majeur"${f.severity === 'majeur' ? ' selected' : ''}>Majeur — passe en rouge</option>
-        <option value="critique"${f.severity === 'critique' ? ' selected' : ''}>Critique — non-conformité directe</option>
-      </select></div>
-    <div id="thr"></div>
-    <div class="field" id="optBox" hidden><label for="co">Options</label>
-      <textarea id="co" style="min-height:80px" placeholder="Bonne=ok&#10;Acceptable=warn&#10;Mauvaise=fail">${esc((f.options || []).map(o => `${o.v}=${o.s}`).join('\n'))}</textarea>
-      <div class="hint">Une option par ligne, suivie de son statut : ok, warn ou fail.</div></div>
+    <div class="field"><label for="cl">Nom du critère</label>
+      <input type="text" id="cl" value="${esc(f.label)}" placeholder="Ex. Taches / Maculatures"></div>
+
+    <div class="field"><label>Ce que l'on note</label>
+      <div class="olist" id="kindBox">
+        ${FIELD_KINDS.map(([k, name, ex]) => `<button type="button" class="obtn" data-k="${k}"
+          aria-pressed="${k === type}"><b>${name}</b><span>${esc(ex)}</span></button>`).join('')}
+      </div></div>
+
+    <div id="scale"></div>
+
+    <div class="field"><label for="cu">Unité affichée</label>
+      <input type="text" id="cu" value="${esc(f.unit || '')}" placeholder="%, kg, °C, °Bx…"></div>
+
     ${typesBlock(f)}
+    ${!isNew && gridType && appliesTo(f, gridType) ? `
+      <button type="button" class="btn ghost block" id="hideHere" style="margin-bottom:13px">
+        Retirer ce critère du ${esc(reportType(gridType).title.toLowerCase())}</button>` : ''}
     <div id="i18nBox">${i18nBlock(f.label, f.i18n)}</div>
-    <div class="field"><label for="ch">Aide affichée sous le critère</label><input type="text" id="ch" value="${esc(f.hint || '')}"></div>
+    <div class="field"><label for="ch">Petite aide affichée sous le critère</label>
+      <input type="text" id="ch" value="${esc(f.hint || '')}" placeholder="Facultatif"></div>
+
     <div class="btn-row">
-      ${isNew ? '' : '<button class="btn ghost danger" style="flex:1" id="del">Supprimer</button>'}
+      <button class="btn ghost" style="flex:1" id="cancel">Annuler</button>
       <button class="btn" style="flex:2" id="ok">${isNew ? 'Ajouter' : 'Enregistrer'}</button>
-    </div>`,
+    </div>
+    ${isNew ? '' : '<button class="btn ghost danger block" id="del" style="margin-top:10px">Supprimer le critère</button>'}`,
     { onMount(el, close) {
         wireTypes(el);
-        const typeSel = el.querySelector('#ct');
-        const paintThr = () => {
-          const t = typeSel.value;
-          el.querySelector('#optBox').hidden = t !== 'choice';
-          el.querySelector('#thr').innerHTML =
-            t === 'pct' ? `<div class="row2">
-                <div class="field"><label for="wa">Orange à partir de</label><input type="number" id="wa" step="0.1" value="${f.warnAt ?? ''}"></div>
-                <div class="field"><label for="fa">Rouge à partir de</label><input type="number" id="fa" step="0.1" value="${f.failAt ?? ''}"></div></div>`
-          : t === 'num' ? `<div class="row2">
-                <div class="field"><label for="mn">Minimum accepté</label><input type="number" id="mn" step="0.1" value="${f.okMin ?? ''}"></div>
-                <div class="field"><label for="mx">Maximum accepté</label><input type="number" id="mx" step="0.1" value="${f.okMax ?? ''}"></div></div>
-                <p class="hint" style="margin:-6px 0 12px">Laissez vide pour une mesure purement informative, jamais notée.</p>`
-          : '';
-        };
-        typeSel.onchange = paintThr; paintThr();
+        const $$$ = (s) => el.querySelector(s);
 
-        const delBtn = el.querySelector('#del');
+        /* ---------- le barème, réécrit à chaque changement de type ---------- */
+        const paintScale = () => {
+          const u = $$$('#cu')?.value.trim() || (type === 'pct' ? '%' : '');
+          const unit = u ? ` ${esc(u)}` : '';
+          let html = '';
+
+          if (type === 'pct') {
+            html = `<div class="scale-box">
+              <h4>Barème</h4>
+              <div class="srow"><span class="sdot ok"></span><b>Conforme</b>
+                <span>jusqu'à <input type="number" step="0.1" id="wa" value="${f.warnAt ?? ''}">${unit}</span></div>
+              <div class="srow"><span class="sdot warn"></span><b>À surveiller</b>
+                <span>jusqu'à <input type="number" step="0.1" id="fa" value="${f.failAt ?? ''}">${unit}</span></div>
+              <div class="srow"><span class="sdot fail"></span><b>Au-delà</b>
+                <span id="beyond">${OUTCOMES[outcomesFor(type).includes(sev) ? sev : 'majeur'][0].toLowerCase()}</span></div>
+            </div>
+            ${outcomeBlock(type, sev, 'Au-delà du second seuil, c\'est…')}`;
+          } else if (type === 'num') {
+            html = `<div class="scale-box">
+              <h4>Barème</h4>
+              <div class="srow"><span class="sdot ok"></span><b>Conforme</b>
+                <span>de <input type="number" step="0.01" id="mn" value="${f.okMin ?? ''}">
+                      à <input type="number" step="0.01" id="mx" value="${f.okMax ?? ''}">${unit}</span></div>
+              <div class="srow"><span class="sdot fail"></span><b>En dehors</b>
+                <span id="beyond">${OUTCOMES[outcomesFor(type).includes(sev) ? sev : 'majeur'][0].toLowerCase()}</span></div>
+              <p class="hint">Laissez les deux cases vides pour une mesure purement informative,
+                notée nulle part — un poids brut, par exemple.</p>
+            </div>
+            ${outcomeBlock(type, sev, 'Hors de la plage, c\'est…')}`;
+          } else if (type === 'choice') {
+            html = `<div class="scale-box">
+              <h4>Choix proposés</h4>
+              <div id="optRows"></div>
+              <button type="button" class="btn ghost sm" id="optAdd" style="margin-top:8px">
+                ${icon('plus')} Ajouter un choix</button>
+            </div>
+            ${outcomeBlock(type, sev, 'Un choix « Non conforme », c\'est…')}`;
+          } else {
+            html = `<div class="scale-box">
+              <h4>Barème</h4>
+              <div class="srow"><span class="sdot ok"></span><b>Conforme</b><span>rien à signaler</span></div>
+              <div class="srow"><span class="sdot fail"></span><b>Non conforme</b>
+                <span id="beyond">${OUTCOMES[outcomesFor(type).includes(sev) ? sev : 'majeur'][0].toLowerCase()}</span></div>
+            </div>
+            ${outcomeBlock(type, sev, 'Répondre « Non », c\'est…')}`;
+          }
+
+          $$$('#scale').innerHTML = html + tryBlock();
+          wireScale();
+        };
+
+        /* ---------- essai en direct ---------- */
+        const tryBlock = () => type === 'choice' || type === 'bool' ? '' : `
+          <div class="try-box">
+            <label for="tryV">Essayer une valeur</label>
+            <input type="number" step="0.01" id="tryV" placeholder="ex. 12">
+            <span id="tryOut" class="muted">—</span>
+          </div>`;
+
+        const runTry = () => {
+          const out = $$$('#tryOut'), inp = $$$('#tryV');
+          if (!out || !inp) return;
+          if (inp.value === '') { out.className = 'muted'; out.textContent = '—'; return; }
+          const probe = draftField();
+          const st = fieldStatus(probe, Number(inp.value));
+          const words = st === 'ok' ? ['Conforme', 'ok']
+            : st === 'warn' ? ['À surveiller', 'warn']
+            : st === 'fail' ? [sev === 'critique' ? 'Non conforme' : 'Défaut ' + sev, 'fail']
+            : ['Non noté', ''];
+          out.className = 'try-out ' + words[1];
+          out.textContent = words[0];
+        };
+
+        /* ---------- lecture de l'état courant du formulaire ---------- */
+        const numOr = (sel) => { const v = $$$(sel)?.value; return v === '' || v == null ? undefined : Number(v); };
+        const draftField = () => {
+          const o = { type, severity: sev };
+          if (type === 'pct') { o.warnAt = numOr('#wa'); o.failAt = numOr('#fa'); }
+          if (type === 'num') { o.okMin = numOr('#mn'); o.okMax = numOr('#mx'); o.step = 0.01; }
+          if (type === 'choice') o.options = opts.filter(x => (x.v || '').trim());
+          return o;
+        };
+
+        /* ---------- lignes de choix ---------- */
+        const paintOpts = () => {
+          const box = $$$('#optRows');
+          if (!box) return;
+          box.innerHTML = opts.map((o, i) => `
+            <div class="opt-row" data-o="${i}">
+              <input type="text" value="${esc(o.v || '')}" placeholder="Intitulé" data-ov>
+              <select data-os>${STATUS_WORDS.map(([v, w]) =>
+                `<option value="${v}"${v === (o.s || 'ok') ? ' selected' : ''}>${w}</option>`).join('')}</select>
+              <button type="button" class="icon-btn" data-ox aria-label="Retirer">${icon('x')}</button>
+            </div>`).join('');
+          box.querySelectorAll('.opt-row').forEach(row => {
+            const i = +row.dataset.o;
+            row.querySelector('[data-ov]').oninput = (e) => { opts[i].v = e.target.value; };
+            row.querySelector('[data-os]').onchange = (e) => { opts[i].s = e.target.value; };
+            row.querySelector('[data-ox]').onclick = () => { opts.splice(i, 1); paintOpts(); };
+          });
+        };
+
+        const wireScale = () => {
+          el.querySelectorAll('#outBox .obtn').forEach(b => b.onclick = () => {
+            sev = b.dataset.o;
+            el.querySelectorAll('#outBox .obtn').forEach(x =>
+              x.setAttribute('aria-pressed', String(x.dataset.o === sev)));
+            const beyond = $$$('#beyond');
+            if (beyond) beyond.textContent = OUTCOMES[sev][0].toLowerCase();
+            runTry();
+          });
+          ['#wa', '#fa', '#mn', '#mx'].forEach(s => { const i = $$$(s); if (i) i.oninput = runTry; });
+          const tv = $$$('#tryV'); if (tv) tv.oninput = runTry;
+          const oa = $$$('#optAdd');
+          if (oa) oa.onclick = () => { opts.push({ v: '', s: 'ok' }); paintOpts(); };
+          paintOpts();
+          runTry();
+        };
+
+        el.querySelectorAll('#kindBox .obtn').forEach(b => b.onclick = () => {
+          type = b.dataset.k;
+          el.querySelectorAll('#kindBox .obtn').forEach(x =>
+            x.setAttribute('aria-pressed', String(x.dataset.k === type)));
+          if (!outcomesFor(type).includes(sev)) sev = outcomesFor(type)[0];
+          paintScale();
+        });
+        $$$('#cu').oninput = paintScale;
+        paintScale();
+
+        $$$('#cancel').onclick = () => close();
+
+        const hide = $$$('#hideHere');
+        if (hide) hide.onclick = async () => {
+          const keep = TYPE_LIST.map(T => T.id).filter(t => t !== gridType &&
+            (!Array.isArray(f.types) || !f.types.length || f.types.includes(t)));
+          if (!keep.length) return toast("C'est son dernier type : supprimez plutôt le critère.", 'err');
+          const before = structuredClone(sec.fields[fi].types);
+          sec.fields[fi].types = keep.length === TYPE_LIST.length ? undefined : keep;
+          await saveGroup(g); close(); renderGroupEditor(g.id);
+          toast(`« ${f.label} » retiré de ${reportType(gridType).short}`, '',
+            { action: 'Annuler', onAction: async () => {
+                sec.fields[fi].types = before; await saveGroup(g); renderGroupEditor(g.id);
+              } });
+        };
+
+        const delBtn = $$$('#del');
         if (delBtn) delBtn.onclick = async () => {
           close();
-          if (!(await confirmSheet('Supprimer le critère', f.label))) return;
+          if (!(await confirmSheet('Supprimer le critère',
+                `« ${f.label} » disparaît de tous les types de rapport.`, { okLabel: 'Supprimer partout' }))) return;
+          const copy = structuredClone(sec.fields[fi]);
           sec.fields.splice(fi, 1);
           await saveGroup(g); renderGroupEditor(g.id);
+          toast('Critère supprimé', '', { action: 'Annuler', onAction: async () => {
+            sec.fields.splice(fi, 0, copy);
+            await saveGroup(g); renderGroupEditor(g.id);
+          } });
         };
 
-        el.querySelector('#ok').onclick = async () => {
-          const label = el.querySelector('#cl').value.trim();
-          if (!label) return toast('Donnez un libellé', 'err');
+        $$$('#ok').onclick = async () => {
+          const label = $$$('#cl').value.trim();
+          if (!label) return toast('Donnez un nom au critère', 'err');
           const out = {
             key: f.key || slug(label).replace(/-/g, '_') + '_' + Math.random().toString(36).slice(2, 5),
-            label, type: typeSel.value,
-            unit: el.querySelector('#cu').value.trim() || undefined,
-            severity: el.querySelector('#cs').value,
-            hint: el.querySelector('#ch').value.trim() || undefined,
+            label, type, severity: sev,
+            unit: $$$('#cu').value.trim() || undefined,
+            hint: $$$('#ch').value.trim() || undefined,
             types: readTypes(el),
-            i18n: readI18n(el)
+            i18n: readI18n(el),
+            ...draftField()
           };
-          if (out.type === 'pct') {
-            out.warnAt = numOrU(el.querySelector('#wa')?.value);
-            out.failAt = numOrU(el.querySelector('#fa')?.value);
-          } else if (out.type === 'num') {
-            out.okMin = numOrU(el.querySelector('#mn')?.value);
-            out.okMax = numOrU(el.querySelector('#mx')?.value);
-            out.step = 0.01;
-          } else if (out.type === 'choice') {
-            out.options = el.querySelector('#co').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => {
-              const [v, s] = l.split('=');
-              return { v: v.trim(), s: (s || 'ok').trim() };
-            });
-          }
+          delete out.step;
+          if (type === 'num') out.step = 0.01;
+          if (type === 'choice' && !out.options.length)
+            return toast('Ajoutez au moins un choix', 'err');
           if (fi >= 0) sec.fields[fi] = out; else sec.fields.push(out);
           await saveGroup(g); close(); renderGroupEditor(g.id);
         };
@@ -441,16 +664,24 @@ async function saveGroup(g) {
 }
 
 const sevDot = (f) => f.severity === 'critique' ? 'fail' : f.severity === 'majeur' ? 'warn' : 'none';
+/* Résumé d'un critère dans la liste : la même phrase que dans
+   l'éditeur, en plus court. On y lit le dernier échelon — celui qui
+   manquait — sans avoir à ouvrir la fiche. */
 const describe = (f) => {
-  if (f.type === 'pct') return `Défaut % · orange ≥ ${f.warnAt ?? '—'} · rouge ≥ ${f.failAt ?? '—'}`;
-  if (f.type === 'num') return (f.okMin != null || f.okMax != null)
-    ? `Mesure${f.unit ? ' (' + f.unit + ')' : ''} · accepté ${f.okMin ?? '−∞'} à ${f.okMax ?? '+∞'}` : 'Mesure informative';
-  if (f.type === 'choice') return `Choix · ${(f.options || []).length} options`;
-  return 'Conforme / Non conforme';
+  const u = f.unit ? ' ' + f.unit : '';
+  const beyond = (OUTCOMES[f.severity] || OUTCOMES.majeur)[0].toLowerCase();
+  if (f.type === 'pct')
+    return `Conforme jusqu'à ${f.warnAt ?? '—'}${u} · à surveiller jusqu'à ${f.failAt ?? '—'}${u} · au-delà : ${beyond}`;
+  if (f.type === 'num')
+    return (f.okMin != null || f.okMax != null)
+      ? `Accepté de ${f.okMin ?? '−∞'} à ${f.okMax ?? '+∞'}${u} · en dehors : ${beyond}`
+      : 'Mesure informative, jamais notée';
+  if (f.type === 'choice')
+    return `${(f.options || []).map(o => o.v).join(', ') || 'aucun choix'} · « non conforme » : ${beyond}`;
+  return `Conforme / non conforme · « non » : ${beyond}`;
 };
 const splitList = (s) => s.split(/[,\n]/).map(x => x.trim()).filter(Boolean);
 const slug = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-const numOrU = (v) => (v === '' || v == null) ? undefined : Number(v);
 
 /* ======================== PARTENAIRES ======================== */
 export function renderPartners() {
@@ -469,7 +700,7 @@ export function renderPartners() {
     ${block('Clients', 'client')}
     ${block('Transporteurs', 'transporteur')}
     <div class="btn-row" style="margin-top:16px"><button class="btn ghost block" id="add">${icon('plus')} Ajouter</button></div>`,
-    { back: () => go('#/settings'),
+    { back: () => back('#/settings'),
       onMount() {
         $$('[data-p]').forEach(b => b.onclick = () => editPartner(state.partners.find(p => p.id === b.dataset.p)));
         $('#add').onclick = () => editPartner(null);
@@ -503,9 +734,9 @@ function refRowsHtml(refs) {
         <button type="button" data-m="range" aria-pressed="${r.mode === 'range'}">Plage</button>
       </span>
       ${r.mode === 'range'
-        ? `<span class="ref-in"><label>Mini <input type="number" step="0.1" data-f="min" value="${r.min ?? ''}"></label>
-             <label>Maxi <input type="number" step="0.1" data-f="max" value="${r.max ?? ''}"></label></span>`
-        : `<span class="ref-in"><label>Cible <input type="number" step="0.1" data-f="ref" value="${r.ref ?? ''}"></label></span>`}
+        ? `<span class="ref-in"><label>Mini <input type="number" step="0.1" min="${LIMITS.min}" max="${LIMITS.max}" data-f="min" value="${r.min ?? ''}"></label>
+             <label>Maxi <input type="number" step="0.1" min="${LIMITS.min}" max="${LIMITS.max}" data-f="max" value="${r.max ?? ''}"></label></span>`
+        : `<span class="ref-in"><label>Cible <input type="number" step="0.1" min="${LIMITS.min}" max="${LIMITS.max}" data-f="ref" value="${r.ref ?? ''}"></label></span>`}
       <button type="button" class="icon-btn" data-f="del" aria-label="Retirer cette référence">${icon('x')}</button>
     </div>`).join('');
 }
@@ -533,14 +764,16 @@ function editPartner(p) {
       <div id="refRows"></div>
       <button type="button" class="btn ghost sm" id="refAdd">${icon('plus')} Ajouter une référence</button>
       <div class="hint">Appliquée automatiquement au rapport dès que ce client est saisi.
-        Une valeur cible tolère ${SEV_STEPS.ok} point d'écart ; une plage en tolère ${RANGE_TOL}.<br>
+        Une valeur cible tolère ${SEV_STEPS.ok} point d'écart ; une plage en tolère ${RANGE_TOL}.
+        Valeurs comprises entre ${LIMITS.min} et ${LIMITS.max}.<br>
         La règle la plus précise l'emporte : produit + conditionnement d'abord, puis produit seul,
         puis conditionnement seul, puis la ligne « tous ».</div>
     </div>
 
     <div class="btn-row">
-      ${isNew ? '' : '<button class="btn ghost danger" style="flex:1" id="del">Supprimer</button>'}
-      <button class="btn" style="flex:2" id="ok">Enregistrer</button></div>`,
+      <button class="btn ghost" style="flex:1" id="cancel">Annuler</button>
+      <button class="btn" style="flex:2" id="ok">Enregistrer</button></div>
+    ${isNew ? '' : '<button class="btn ghost danger block" id="del" style="margin-top:10px">Supprimer ce partenaire</button>'}`,
     { onMount(el, close) {
         let kind = p.kind;
         const paintRefs = () => {
@@ -561,7 +794,19 @@ function editPartner(p) {
             });
             ['ref', 'min', 'max'].forEach(f => {
               const inp = row.querySelector(`[data-f=${f}]`);
-              if (inp) inp.oninput = () => { refs[i][f] = inp.value === '' ? null : Number(inp.value); };
+              if (!inp) return;
+              inp.oninput = () => { refs[i][f] = inp.value === '' ? null : Number(inp.value); };
+              /* Borné à la sortie du champ : une valeur hors mesure est
+                 une faute de frappe, on la ramène sans rien perdre. */
+              inp.onblur = () => {
+                if (inp.value === '') { refs[i][f] = null; return; }
+                const c = clampP(inp.value);
+                if (c != null && c !== Number(inp.value)) {
+                  inp.value = String(c);
+                  toast(`Ramené à ${c} : la mesure va de ${LIMITS.min} à ${LIMITS.max}.`);
+                }
+                refs[i][f] = c;
+              };
             });
             row.querySelector('[data-f=del]').onclick = () => { refs.splice(i, 1); paintRefs(); };
           });
@@ -579,12 +824,19 @@ function editPartner(p) {
           el.querySelectorAll('#kind button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.k === kind)));
           el.querySelector('#refWrap').hidden = kind !== 'client';
         });
+        el.querySelector('#cancel').onclick = () => close();
         const del = el.querySelector('#del');
         if (del) del.onclick = async () => {
           close();
           if (!(await confirmSheet('Supprimer', p.name))) return;
+          const copy = structuredClone(p);
           await db('partners').eq('id', p.id).remove().catch(() => {});
           await local.del('partners', p.id); await loadRefs(); renderPartners();
+          toast(`${copy.name} supprimé`, '', { action: 'Annuler', onAction: async () => {
+            await local.put('partners', copy);
+            await queue('partner', copy);
+            await sync({ silent: true }); await loadRefs(); renderPartners();
+          } });
         };
         el.querySelector('#ok').onclick = async () => {
           /* Une référence incomplète ne sert à rien et s'appliquerait
@@ -628,7 +880,7 @@ export async function renderUsers() {
     <div class="list">${active.map(card).join('') || '<p class="muted">Aucun.</p>'}</div>
     <p class="muted" style="margin-top:16px">Un nouveau collègue crée son compte depuis l'écran de connexion :
     il apparaît ici en attente, et vous lui ouvrez l'accès.</p>`,
-    { back: () => go('#/settings'),
+    { back: () => back('#/settings'),
       onMount() {
         $$('[data-u]').forEach(b => b.onclick = () => editUser(users.find(u => u.id === b.dataset.u)));
       } });
@@ -693,7 +945,7 @@ export function renderAccount() {
     </div>
     <p class="muted" style="margin-top:18px">Données hébergées chez Supabase, région Paris (eu-west-3).
     Les photos sont privées : leur accès passe par un lien signé, valable une heure.</p>`,
-    { back: () => go('#/settings'),
+    { back: () => back('#/settings'),
       onMount() {
         const s = $('#saveS');
         if (s) s.onclick = async () => {

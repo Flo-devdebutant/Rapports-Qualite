@@ -1,10 +1,10 @@
 /* Flux des rapports (liste filtrable) et fiche d'un rapport. */
 
-import { state, shell, groupById, go, syncBadge } from './app.js';
+import { state, shell, groupById, go, back, syncBadge } from './app.js';
 import { local, queue, sync } from './store.js';
 import { flatFields, fieldStatus, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { $, $$, esc, icon, toast, sheet, confirmSheet, stars, fmtDate, debounce, shareFile, download } from './ui.js';
-import { buildReportPDF, pdfFilename, LANGS } from './report-pdf.js';
+import { buildReportPDF, reportFilename, LANGS } from './report-pdf.js';
 import { buildXlsx } from './xlsx.js';
 import { storage } from './supa.js';
 import { countryName, countryNames } from './countries.js';
@@ -23,7 +23,9 @@ export async function renderFeed({ refresh = true } = {}) {
      réveil périodique, jusqu'à deux minutes plus tard. */
   if (refresh) sync({ silent: true });
 
-  const all = (await local.all('reports')).filter(r => !r.deleted)
+  /* Les brouillons restent en dehors du flux : ce sont des saisies en
+     cours, pas des rapports. Ils se reprennent depuis l'accueil. */
+  const all = (await local.all('reports')).filter(r => !r.deleted && !r._draft)
     .sort((a, b) => new Date(b.report_date) - new Date(a.report_date));
   const rows = applyFilters(all);
   const canWrite = ['admin', 'inspecteur'].includes(state.profile?.role);
@@ -42,7 +44,7 @@ export async function renderFeed({ refresh = true } = {}) {
     </div>
     <p class="muted" style="margin:0 0 10px">${rows.length} rapport${rows.length > 1 ? 's' : ''}${activeFilterCount() ? ' · filtres actifs' : ''}</p>
     <div class="list" id="list">${rows.length ? '' : emptyHtml(all.length)}</div>`,
-    { back: () => go('#/'),
+    { back: () => back('#/'),
       actions: (canWrite ? `<button class="icon-btn" id="newBtn" aria-label="Nouveau">${icon('plus')}</button>` : '') + syncBadge(),
       onMount() {
         $('#q').oninput = debounce(e => { filters.q = e.target.value; renderFeed({ refresh: false }); }, 260);
@@ -241,15 +243,15 @@ export async function renderReportView(id) {
       <div class="photo-grid" id="viewPhotos"></div></div>` : ''}
 
     <div class="sticky-actions">
-      <button class="btn ghost" id="pdfBtn">${icon('pdf')} PDF</button>
+      <button class="btn ghost" id="pdfBtn">${icon('down')} Télécharger</button>
       <button class="btn" id="shareBtn">${icon('share')} Partager</button>
       ${canEdit ? `<button class="icon-btn" id="moreBtn" aria-label="Plus">⋯</button>` : ''}
     </div>`,
-    { back: () => go('#/feed'),
+    { back: () => back('#/feed'),
       onMount() {
         if (r.photos?.length) paintViewPhotos(r);
-        $('#pdfBtn').onclick   = () => pdfFlow(r, g, 'download');
-        $('#shareBtn').onclick = () => pdfFlow(r, g, 'share');
+        $('#pdfBtn').onclick   = () => exportFlow(r, g, 'download');
+        $('#shareBtn').onclick = () => exportFlow(r, g, 'share');
         const mb = $('#moreBtn');
         if (mb) mb.onclick = () => sheet('', `
           <button class="menu-item" id="ed"><span class="ic n">${icon('edit')}</span>
@@ -377,33 +379,79 @@ async function duplicate(r) {
   go(`#/report/${copy.id}/edit`);
 }
 
-/* --------------------------- PDF & partage --------------------------- */
-async function pdfFlow(r, g, action) {
-  sheet('Langue du rapport', `
-    <p class="muted" style="margin:0 0 12px">Le PDF part chez un tiers : choisissez la langue du destinataire.</p>
-    <div class="list">${Object.entries(LANGS).map(([k, v]) =>
-      `<button class="menu-item" data-l="${k}"><span class="ic n">${k.toUpperCase()}</span>
-       <span class="tx"><b>${esc(v)}</b></span><span class="chev">›</span></button>`).join('')}</div>`,
+/* ------------------------ export d'un rapport ------------------------
+   Une seule feuille, une seule touche : le format et la langue sont
+   dans la même liste. La version précédente demandait la langue avant
+   de savoir ce qu'on voulait en faire, et n'offrait que le PDF —
+   l'Excel modifiable n'était accessible que depuis le flux. */
+async function exportFlow(r, g, action) {
+  const partage = action === 'share';
+  const last = (await local.meta('lastLang')) || 'fr';
+  const langs = Object.entries(LANGS).sort((a, b) => (b[0] === last) - (a[0] === last));
+
+  sheet(partage ? 'Partager le rapport' : 'Télécharger le rapport', `
+    <p class="muted" style="margin:0 0 12px">Le PDF part chez un tiers : choisissez la langue du
+      destinataire. L'Excel reste en français, il sert à retravailler les chiffres.</p>
+    <div class="list">
+      ${langs.map(([k, v]) => `
+        <button class="menu-item" data-f="pdf" data-l="${k}">
+          <span class="ic n">${icon('pdf')}</span>
+          <span class="tx"><b>PDF — ${esc(v)}</b>${k === last ? '<span>Dernière langue utilisée</span>' : ''}</span>
+          <span class="chev">›</span></button>`).join('')}
+      <button class="menu-item" data-f="xlsx" style="margin-top:6px">
+        <span class="ic g">${icon('excel')}</span>
+        <span class="tx"><b>Excel — modifiable</b><span>Chiffres et mesures, feuille par feuille</span></span>
+        <span class="chev">›</span></button>
+    </div>`,
     { onMount(el, close) {
-        el.querySelectorAll('[data-l]').forEach(b => b.onclick = async () => {
+        el.querySelectorAll('[data-f]').forEach(b => b.onclick = async () => {
           close();
-          toast('Génération du PDF…');
+          const xlsx = b.dataset.f === 'xlsx';
+          toast(xlsx ? 'Préparation du fichier Excel…' : 'Génération du PDF…');
           try {
-            const blob = await buildReportPDF(r, g, { lang: b.dataset.l, company: state.settings.company });
-            const name = pdfFilename(r, g);
-            if (action === 'share') {
-              const res = await shareFile(blob, name,
-                `${state.settings.company} — ${reportType(r.type).title.toLowerCase()} ${r.header?.lot || r.header?.bl || r.report_no || ''}`);
-              if (res === 'downloaded') toast('PDF téléchargé');
-            } else { download(blob, name); toast('PDF téléchargé'); }
-          } catch (e) { toast('PDF : ' + e.message, 'err'); }
+            let blob, name;
+            if (xlsx) {
+              blob = buildReportsXlsx([r]);
+              name = reportFilename(r, g, 'xlsx');
+            } else {
+              await local.meta('lastLang', b.dataset.l);
+              blob = await buildReportPDF(r, g, { lang: b.dataset.l, company: state.settings.company });
+              name = reportFilename(r, g, 'pdf');
+            }
+            await deliver(blob, name, partage,
+              `${state.settings.company} — ${reportType(r.type).title.toLowerCase()} ${r.header?.lot || r.header?.bl || r.report_no || ''}`);
+          } catch (e) { toast('Export : ' + e.message, 'err'); }
         });
       } });
+}
+
+/* Envoi du fichier : partage natif, ou enregistrement sur l'appareil.
+   Le message qui suit nomme le fichier — sans quoi un téléchargement
+   réussi passe complètement inaperçu sur téléphone. */
+async function deliver(blob, name, partage, text) {
+  if (partage) {
+    const res = await shareFile(blob, name, text);
+    if (res === 'downloaded') toast(`Enregistré : ${name}`, '', { ms: 5000 });
+    else if (res === 'shared') toast('Rapport partagé');
+    return;
+  }
+  const ok = download(blob, name);
+  toast(ok ? `Enregistré dans vos téléchargements : ${name}`
+           : `Ouvert dans un nouvel onglet : ${name}`, '', { ms: 5000 });
 }
 
 /* ----------------------------- export Excel ----------------------------- */
 export function exportXlsx(rows) {
   if (!rows.length) return toast('Rien à exporter', 'err');
+  const blob = buildReportsXlsx(rows);
+  const d = new Date(), p = (n) => String(n).padStart(2, '0');
+  download(blob, `Rapports qualité ${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}.xlsx`);
+  toast(`${rows.length} rapport${rows.length > 1 ? 's exportés' : ' exporté'}`);
+}
+
+/* Le classeur lui-même, sans téléchargement : la fiche d'un rapport
+   s'en sert pour livrer un fichier au nom correct. */
+export function buildReportsXlsx(rows) {
 
   const head = ['N°','Date','Type','Groupe','Variété','Calibre','Origine(s)','Partenaire','Département',
                 'Commande','Id chargement','N° de lot','N° de BL','Catégorie','Conditionnement','Détail calibres','Qualité','Conservabilité','Évaluation',
@@ -435,13 +483,10 @@ export function exportXlsx(rows) {
     }
   }
 
-  const blob = buildXlsx([
+  return buildXlsx([
     { name: 'Rapports', rows: [head, ...main] },
     { name: 'Mesures', rows: detail }
   ]);
-  const d = new Date(), p = (n) => String(n).padStart(2, '0');
-  download(blob, `rapports_qc_${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}.xlsx`);
-  toast(`${rows.length} rapport${rows.length > 1 ? 's exportés' : ' exporté'}`);
 }
 const num = (v) => (v === '' || v == null) ? '' : Number(v);
 

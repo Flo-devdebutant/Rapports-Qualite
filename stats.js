@@ -1,7 +1,7 @@
 /* Statistiques : ce que le flux ne montre pas — quels fournisseurs
    posent problème, sur quels produits, et comment ça évolue. */
 
-import { state, shell, groupById, go } from './app.js';
+import { state, shell, groupById, go, back } from './app.js';
 import { local } from './store.js';
 import { $, $$, esc, icon, toast } from './ui.js';
 import { exportXlsx } from './reports.js';
@@ -12,7 +12,7 @@ const PERIODS = [[30, '30 jours'], [90, '3 mois'], [365, '12 mois'], [0, 'Tout']
 let period = 90;
 
 export async function renderStats() {
-  const all = (await local.all('reports')).filter(r => !r.deleted);
+  const all = (await local.all('reports')).filter(r => !r.deleted && !r._draft);
   const since = period ? Date.now() - period * 86400000 : 0;
   const rows = all.filter(r => new Date(r.report_date).getTime() >= since);
 
@@ -51,7 +51,7 @@ export async function renderStats() {
     <div class="btn-row" style="margin-top:16px">
       <button class="btn ghost block" id="xls">${icon('excel')} Exporter la période en Excel</button>
     </div>`,
-    { back: () => go('#/'),
+    { back: () => back('#/'),
       onMount() {
         $$('[data-p]').forEach(b => b.onclick = () => { period = +b.dataset.p; renderStats(); });
         $('#xls').onclick = () => exportXlsx(rows);

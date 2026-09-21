@@ -100,6 +100,17 @@ main{flex:1;padding:14px 12px calc(28px + var(--safe-b));max-width:760px;width:1
 .menu-item .tx b{display:block;font-size:15.5px}
 .menu-item .tx span{display:block;font-size:12.5px;color:var(--ink-3);margin-top:1px}
 .menu-item .chev{color:var(--ink-3);font-size:19px}
+/* Un brouillon se distingue sans crier : un liseré orange suffit à
+   le séparer des actions neuves juste en dessous. */
+.menu-item.draft{border-color:var(--orange);background:
+  color-mix(in srgb,var(--orange) 6%,var(--card))}
+
+/* Bandeau de reprise : discret mais permanent, contrairement à un
+   message éphémère qu'on rate en regardant ailleurs. */
+.resume-box{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:10px 12px;margin-bottom:11px;border:1px solid var(--orange);border-radius:var(--r-sm);
+  background:color-mix(in srgb,var(--orange) 8%,var(--card));font-size:12.5px;color:var(--ink-2)}
+.resume-box span{flex:1;min-width:150px}
 
 /* ----------------------------- formulaire ----------------------------- */
 .field{margin-bottom:13px}
@@ -128,6 +139,17 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .lot-f{display:block;min-width:0}
 .lot-f label{display:block;font-size:10.5px;font-weight:600;color:var(--ink-3);margin-bottom:3px;letter-spacing:.01em}
 .cal-row input,.cal-row select{padding:9px 10px;font-size:15px}
+/* Bouton de choix : il a l'allure d'un champ pour qu'on sache qu'on
+   peut le toucher, mais il ouvre une liste cherchable. */
+.picker{
+  display:block;width:100%;min-height:40px;padding:9px 30px 9px 10px;text-align:left;
+  border:1px solid var(--line);border-radius:var(--r-sm);background:var(--card);color:var(--ink);
+  font-size:15px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b6b6b' stroke-width='2'><circle cx='11' cy='11' r='7'/><path d='M20 20l-3.5-3.5'/></svg>");
+  background-repeat:no-repeat;background-position:right 8px center;background-size:16px
+}
+.picker i{color:var(--ink-3);font-style:normal}
+.pick-list .menu-item{padding:12px 14px;box-shadow:none}
 .cal-row select{padding-right:30px}
 .cal-row input[type=number]{text-align:right}
 .cal-row .icon-btn{width:34px;height:34px;border-radius:9px;color:var(--ink-3);align-self:end;margin-bottom:2px}
@@ -162,6 +184,47 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .pill.warn{background:rgba(245,158,11,.15);color:#b45309}
 .pill.fail{background:rgba(220,38,38,.12);color:#b91c1c}
 .pill.sm{padding:2px 8px;font-size:10.5px;font-weight:600}
+
+/* ------------------- éditeur de critère -------------------
+   Des choix en toutes lettres plutôt que des listes déroulantes de
+   jargon : on lit l'effet, pas le nom du réglage. */
+.olist{display:flex;flex-direction:column;gap:7px}
+.obtn{
+  display:block;width:100%;text-align:left;padding:11px 13px;cursor:pointer;
+  border:1px solid var(--line);border-radius:var(--r-sm);background:var(--card);color:var(--ink)
+}
+.obtn b{display:block;font-size:14px}
+.obtn span{display:block;font-size:11.5px;color:var(--ink-3);margin-top:2px}
+.obtn[aria-pressed=true]{border-color:var(--orange);border-width:2px;padding:10px 12px;
+  background:color-mix(in srgb,var(--orange) 7%,var(--card))}
+.obtn[aria-pressed=true] b{color:var(--orange-d)}
+
+/* Le barème se lit de haut en bas comme une phrase : conforme, à
+   surveiller, au-delà. */
+.scale-box{border:1px solid var(--line);border-radius:var(--r-sm);padding:12px;margin-bottom:13px;background:var(--bg)}
+.scale-box h4{margin:0 0 10px;font-size:13px;font-weight:700;color:var(--ink-2)}
+.srow{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:7px 0;border-top:1px solid var(--line-2)}
+.srow:first-of-type{border-top:0;padding-top:0}
+.srow b{font-size:13.5px;flex:0 0 auto;min-width:92px}
+.srow > span:last-child{font-size:13px;color:var(--ink-2);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.srow input{width:74px;min-height:38px;padding:0 8px;text-align:center;font-weight:650;font-size:15px;
+  border:1px solid var(--line);border-radius:8px;background:var(--card);color:var(--ink)}
+.sdot{width:10px;height:10px;border-radius:50%;flex:0 0 10px}
+.sdot.ok{background:var(--ok)} .sdot.warn{background:var(--warn)} .sdot.fail{background:var(--fail)}
+.scale-box .hint{margin-top:9px}
+
+/* Un choix de liste : son intitulé et ce qu'il vaut, sans syntaxe. */
+.opt-row{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+.opt-row input{flex:2 1 110px;min-height:40px;padding:0 10px;font-size:15px}
+.opt-row select{flex:1 1 130px;min-height:40px;padding:0 28px 0 9px;font-size:14px}
+
+/* L'essai en direct : on tape une valeur, on lit le verdict. */
+.try-box{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:13px;
+  padding:10px 12px;border:1px dashed var(--line);border-radius:var(--r-sm)}
+.try-box label{font-size:12.5px;font-weight:600;color:var(--ink-2)}
+.try-box input{width:96px;min-height:38px;padding:0 9px;text-align:center;font-size:15px}
+.try-out{font-weight:700;font-size:13.5px}
+.try-out.ok{color:var(--sev-ok)} .try-out.warn{color:var(--sev-mineur)} .try-out.fail{color:var(--sev-critique)}
 
 /* Portée d'une section ou d'un critère : à quels types de rapport il
    s'applique. Trois boutons plutôt que trois cases à cocher — la
@@ -267,13 +330,21 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 }
 .sticky-actions .btn{flex:1}
 
+/* Le message remonte au-dessus de la barre d'actions collante : un
+   « Annuler » posé derrière un bouton Enregistrer serait inatteignable.
+   Et il redevient cliquable dès qu'il porte une action — sans quoi le
+   doigt traverse le message. */
 .toast{
-  position:fixed;left:50%;bottom:calc(22px + var(--safe-b));transform:translateX(-50%) translateY(14px);
+  position:fixed;left:50%;bottom:calc(84px + var(--safe-b));transform:translateX(-50%) translateY(14px);
   background:var(--ink);color:var(--bg);padding:11px 17px;border-radius:11px;font-size:13.5px;font-weight:600;
   z-index:200;opacity:0;transition:.2s;pointer-events:none;max-width:90vw;text-align:center;box-shadow:var(--shadow)
 }
 .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.on:has(.toast-act){pointer-events:auto}
 .toast.err{background:var(--fail);color:#fff}
+.toast-act{margin-left:14px;border:0;background:none;padding:0;cursor:pointer;
+  color:var(--orange);font:inherit;font-weight:700;text-decoration:underline}
+.toast.err .toast-act{color:#fff}
 
 .sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;opacity:0;transition:.2s}
 .sheet-bg.on{opacity:1}
@@ -284,8 +355,16 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
   max-height:88dvh;overflow:auto;box-shadow:0 -6px 30px rgba(0,0,0,.18)
 }
 .sheet.on{transform:translateY(0)}
+/* L'en-tête est la poignée : c'est là qu'on attrape la feuille pour la
+   tirer vers le bas. touch-action:none pour que le navigateur nous
+   laisse le geste au lieu de le traiter comme un défilement. */
+.sheet-head{touch-action:none;cursor:grab;margin:0 -16px;padding:0 16px}
+.sheet-head:active{cursor:grabbing}
 .sheet .grip{width:38px;height:4px;border-radius:2px;background:var(--line);margin:6px auto 14px}
 .sheet h3{font-size:16px;margin-bottom:12px}
+/* Le défilement s'arrête au bord de la feuille : sans cela le doigt
+   continue sur la page du dessous, qui se met à bouger derrière. */
+.sheet,.sheet-body{overscroll-behavior:contain}
 
 .sync{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--ink-3);font-weight:600}
 .sync[hidden]{display:none}   /* display:flex l'emporterait sur [hidden] sans cette règle */

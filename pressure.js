@@ -14,11 +14,24 @@
 
 export const DEFAULT_PRESSURE = { fruits: 5, sides: 2, ref: 13, unit: 'kg' };
 
-/* L'axe vertical couvre toujours 0 à 14, graduation par graduation.
-   Une échelle qui s'ajuste au lot fait paraître identiques un lot à
-   12,8–13,2 et un lot à 6–13 : c'est la maturité réelle qu'on veut
-   lire, pas la dispersion relative. L'échelle ne s'étend que si une
-   mesure sort de la plage. */
+/* Le pénétromètre ne lit rien en dehors de 0 à 13 : une pression
+   saisie, une valeur de référence ou une borne de plage hors de cet
+   intervalle serait une faute de frappe, jamais une mesure. Tout est
+   donc borné à la saisie comme au calcul. */
+export const LIMITS = { min: 0, max: 13 };
+
+export const clampP = (v) => {
+  const n = Number(v);
+  if (!isFinite(n)) return null;
+  return Math.min(LIMITS.max, Math.max(LIMITS.min, n));
+};
+
+/* L'axe vertical couvre toujours 0 à 14, graduation par graduation :
+   une graduation de battement au-dessus du maximum mesurable, pour
+   qu'une palette à 13 ne soit pas collée au cadre. Une échelle qui
+   s'ajuste au lot ferait paraître identiques un lot à 12,8–13,2 et un
+   lot à 6–13 : c'est la maturité réelle qu'on veut lire, pas la
+   dispersion relative. */
 export const SCALE = { min: 0, max: 14 };
 
 export function pressureConfig(group) {
@@ -26,7 +39,7 @@ export function pressureConfig(group) {
   return {
     fruits: Number(c.fruits) > 0 ? Number(c.fruits) : DEFAULT_PRESSURE.fruits,
     sides:  Number(c.sides)  > 0 ? Number(c.sides)  : DEFAULT_PRESSURE.sides,
-    ref:    c.ref != null && c.ref !== '' ? Number(c.ref) : DEFAULT_PRESSURE.ref,
+    ref:    c.ref != null && c.ref !== '' ? clampP(c.ref) : DEFAULT_PRESSURE.ref,
     unit:   c.unit || DEFAULT_PRESSURE.unit
   };
 }
@@ -34,7 +47,8 @@ export function pressureConfig(group) {
 /* Moyenne, min et max d'une palette. Une valeur laissée vide est
    ignorée : une palette partiellement mesurée reste exploitable. */
 export function palletStats(pallet) {
-  const v = (pallet?.v || []).filter(x => x !== '' && x != null).map(Number).filter(isFinite);
+  const v = (pallet?.v || []).filter(x => x !== '' && x != null)
+    .map(clampP).filter(x => x != null);
   if (!v.length) return null;
   const sum = v.reduce((a, b) => a + b, 0);
   return { n: v.length, avg: sum / v.length, min: Math.min(...v), max: Math.max(...v) };
@@ -43,7 +57,8 @@ export function palletStats(pallet) {
 export function lotStats(pressures) {
   const pallets = (pressures?.pallets || []).map(p => ({ p, s: palletStats(p) })).filter(x => x.s);
   if (!pallets.length) return null;
-  const all = pallets.flatMap(x => (x.p.v || []).filter(v => v !== '' && v != null).map(Number).filter(isFinite));
+  const all = pallets.flatMap(x => (x.p.v || []).filter(v => v !== '' && v != null)
+    .map(clampP).filter(v => v != null));
   const avg = all.reduce((a, b) => a + b, 0) / all.length;
   return {
     pallets: pallets.map(x => ({ name: String(x.p.n ?? ''), ...x.s })),
@@ -139,12 +154,12 @@ export function refSpec(pressures, group) {
   const mode = p.mode === 'range' ? 'range' : 'target';
 
   if (mode === 'range') {
-    const lo = num(p.rmin), hi = num(p.rmax);
+    const lo = clampP(num(p.rmin)), hi = clampP(num(p.rmax));
     if (lo == null || hi == null) return null;
     return { mode: 'range', min: Math.min(lo, hi), max: Math.max(lo, hi), tol: RANGE_TOL,
              unit, source: p.refSource || 'manuel', client: p.refClient || '' };
   }
-  const ref = num(p.ref != null ? p.ref : cfg.ref);
+  const ref = clampP(num(p.ref != null ? p.ref : cfg.ref));
   if (ref == null) return null;
   return { mode: 'target', ref, unit, source: p.refSource || 'produit', client: p.refClient || '' };
 }
@@ -223,8 +238,8 @@ export function partnerRef(partner, group, packaging) {
 
   const scope = { group: hit.group || '', packaging: hit.packaging || '' };
   if (hit.mode === 'range' && num(hit.min) != null && num(hit.max) != null)
-    return { mode: 'range', min: num(hit.min), max: num(hit.max), ...scope };
-  if (num(hit.ref) != null) return { mode: 'target', ref: num(hit.ref), ...scope };
+    return { mode: 'range', min: clampP(hit.min), max: clampP(hit.max), ...scope };
+  if (num(hit.ref) != null) return { mode: 'target', ref: clampP(hit.ref), ...scope };
   return null;
 }
 

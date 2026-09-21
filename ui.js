@@ -13,6 +13,7 @@ export const ICONS = {
   plus:   '<path d="M12 5v14M5 12h14"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
   camera: '<path d="M4 8h3l1.5-2h7L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.4"/>',
+  image:  '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.6"/><path d="M4 17l5-5 4 4 2.5-2.5L20 17"/>',
   share:  '<path d="M12 15V4M8.5 7.5L12 4l3.5 3.5"/><path d="M5 13v6h14v-6"/>',
   pdf:    '<path d="M14 3H7v18h11V7z"/><path d="M14 3v4h4"/><path d="M9 14h1.6a1.4 1.4 0 000-2.8H9V17"/>',
   excel:  '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11M15 9v11"/>',
@@ -44,47 +45,200 @@ export const ICONS = {
 export const icon = (n, cls = '') =>
   `<svg viewBox="0 0 24 24" class="${cls}" aria-hidden="true">${ICONS[n] || ''}</svg>`;
 
-/* ------------------------------ toast ------------------------------ */
+/* ------------------------------ toast ------------------------------
+   Un message peut porter une action — « Supprimé · Annuler ». C'est la
+   seule façon honnête de proposer un repentir sur une suppression :
+   demander confirmation avant chaque geste use l'utilisateur, offrir
+   le retour arrière après coup ne coûte rien. */
 let toastTimer;
-export function toast(msg, kind = '') {
+export function toast(msg, kind = '', { action = '', onAction = null, ms } = {}) {
   const el = document.getElementById('toast');
-  el.textContent = msg;
+  const delay = ms ?? (action ? 6000 : 2600);
+  el.innerHTML = '';
+  el.append(document.createTextNode(msg));
+  if (action) {
+    const b = document.createElement('button');
+    b.className = 'toast-act';
+    b.textContent = action;
+    b.onclick = () => { el.className = 'toast ' + kind; clearTimeout(toastTimer); onAction?.(); };
+    el.append(b);
+  }
   el.className = 'toast on ' + kind;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.className = 'toast ' + kind; }, 2600);
+  toastTimer = setTimeout(() => { el.className = 'toast ' + kind; }, delay);
 }
 
-/* --------------------------- feuille modale --------------------------- */
-export function sheet(title, html, { onMount } = {}) {
+/* --------------------------- feuille modale ---------------------------
+   Deux exigences venues de l'usage réel sur téléphone :
+   — l'arrière-plan ne doit pas défiler quand on fait glisser le doigt
+     au-delà du contenu de la feuille (le corps de page est figé à
+     l'ouverture, et sa position restaurée à la fermeture) ;
+   — la feuille doit se fermer en la tirant vers le bas par sa barre,
+     le geste que tout le monde essaie en premier. */
+let lockDepth = 0, lockY = 0;
+
+function lockScroll() {
+  if (lockDepth++ === 0) {
+    lockY = window.scrollY;
+    const b = document.body;
+    b.style.position = 'fixed';
+    b.style.top = `-${lockY}px`;
+    b.style.left = '0'; b.style.right = '0';
+    b.style.width = '100%';
+  }
+}
+function unlockScroll() {
+  if (--lockDepth > 0) return;
+  lockDepth = 0;
+  const b = document.body;
+  b.style.position = ''; b.style.top = ''; b.style.left = ''; b.style.right = ''; b.style.width = '';
+  window.scrollTo(0, lockY);
+}
+
+export function sheet(title, html, { onMount, onClose } = {}) {
   const bg = document.createElement('div'); bg.className = 'sheet-bg';
   const sh = document.createElement('div'); sh.className = 'sheet';
-  sh.innerHTML = `<div class="grip"></div>${title ? `<h3>${esc(title)}</h3>` : ''}<div class="sheet-body">${html}</div>`;
+  sh.innerHTML = `<div class="sheet-head"><div class="grip"></div>${title ? `<h3>${esc(title)}</h3>` : ''}</div>
+    <div class="sheet-body">${html}</div>`;
   document.body.append(bg, sh);
+  lockScroll();
   requestAnimationFrame(() => { bg.classList.add('on'); sh.classList.add('on'); });
 
+  let closed = false;
   const close = () => {
+    if (closed) return;
+    closed = true;
     bg.classList.remove('on'); sh.classList.remove('on');
+    sh.style.transform = '';
     setTimeout(() => { bg.remove(); sh.remove(); }, 240);
     document.removeEventListener('keydown', onKey);
+    unlockScroll();
+    onClose?.();
   };
   const onKey = (e) => { if (e.key === 'Escape') close(); };
   bg.onclick = close;
   document.addEventListener('keydown', onKey);
+
+  /* Glissement vers le bas depuis l'en-tête. On ne suit que le geste
+     descendant : tirer vers le haut ne doit pas décoller la feuille. */
+  const head = sh.querySelector('.sheet-head');
+  let y0 = null;
+  head.addEventListener('pointerdown', (e) => {
+    y0 = e.clientY;
+    sh.style.transition = 'none';
+    head.setPointerCapture?.(e.pointerId);
+  });
+  head.addEventListener('pointermove', (e) => {
+    if (y0 == null) return;
+    const dy = Math.max(0, e.clientY - y0);
+    sh.style.transform = `translateY(${dy}px)`;
+    if (dy > 0) bg.style.opacity = String(Math.max(0.2, 1 - dy / 320));
+  });
+  const release = (e) => {
+    if (y0 == null) return;
+    const dy = Math.max(0, (e.clientY ?? y0) - y0);
+    y0 = null;
+    sh.style.transition = '';
+    bg.style.opacity = '';
+    if (dy > 90) close(); else sh.style.transform = '';
+  };
+  head.addEventListener('pointerup', release);
+  head.addEventListener('pointercancel', release);
+
   onMount?.(sh, close);
+  return close;
+}
+
+/* --------------------------- sélecteur avec recherche ---------------------------
+   Une liste déroulante de cinquante-sept pays se parcourt au pouce
+   pendant dix secondes. Un champ de recherche en tête règle le
+   problème : on tape « per », on obtient Pérou.
+   `items` : [{ v, label, hint }]. `allowFree` autorise une valeur
+   absente de la liste — un calibre maison, par exemple. */
+export function pickSheet(title, items, { value = '', allowFree = false, placeholder = 'Rechercher…', onPick } = {}) {
+  const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  let close;
+
+  /* Classement : le code exact d'abord (« MA » doit donner le Maroc,
+     pas l'Allemagne), puis les libellés qui commencent par la
+     recherche, puis ceux qui la contiennent. Sans cela, une
+     correspondance au milieu d'un mot passe devant l'évidence. */
+  const rank = (it, n) => {
+    const v = norm(it.v), l = norm(it.label);
+    if (v === n) return 0;
+    if (l === n) return 1;
+    if (l.startsWith(n)) return 2;
+    if (v.startsWith(n)) return 3;
+    return 4;
+  };
+
+  const rows = (q) => {
+    const n = norm(q);
+    const hits = items
+      .filter(it => !n || norm(it.label).includes(n) || norm(it.v).includes(n))
+      .map((it, i) => ({ it, i, r: n ? rank(it, n) : 4 }))
+      .sort((a, b) => a.r - b.r || a.i - b.i)
+      .map(x => x.it);
+    if (!hits.length) {
+      return allowFree && q.trim()
+        ? `<button class="menu-item" data-free><span class="ic n">${icon('plus')}</span>
+             <span class="tx"><b>Utiliser « ${esc(q.trim())} »</b><span>Valeur libre</span></span></button>`
+        : `<p class="muted" style="margin:0">Aucun résultat.</p>`;
+    }
+    return hits.map(it => `
+      <button class="menu-item pick" data-v="${esc(it.v)}">
+        <span class="tx"><b>${esc(it.label)}</b>${it.hint ? `<span>${esc(it.hint)}</span>` : ''}</span>
+        <span class="chev">${it.v === value ? '✓' : '›'}</span></button>`).join('') +
+      (allowFree && q.trim() && !hits.some(it => norm(it.label) === n)
+        ? `<button class="menu-item" data-free style="margin-top:8px"><span class="ic n">${icon('plus')}</span>
+             <span class="tx"><b>Utiliser « ${esc(q.trim())} »</b><span>Valeur libre</span></span></button>` : '');
+  };
+
+  close = sheet(title, `
+    <input type="text" id="pickQ" placeholder="${esc(placeholder)}" autocomplete="off"
+           inputmode="search" style="margin-bottom:12px">
+    <div class="list pick-list" id="pickList" style="max-height:52dvh;overflow:auto">${rows('')}</div>`,
+    { onMount(el, c) {
+        close = c;
+        const q = el.querySelector('#pickQ'), list = el.querySelector('#pickList');
+        const wire = () => {
+          list.querySelectorAll('.pick').forEach(b => b.onclick = () => { c(); onPick?.(b.dataset.v); });
+          const free = list.querySelector('[data-free]');
+          if (free) free.onclick = () => { c(); onPick?.(q.value.trim()); };
+        };
+        wire();
+        q.oninput = () => { list.innerHTML = rows(q.value); wire(); };
+        q.onkeydown = (e) => {
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          const first = list.querySelector('.pick') || list.querySelector('[data-free]');
+          first?.click();
+        };
+        /* Pas de focus automatique : le clavier qui surgit masquerait la
+           moitié de la liste sur un téléphone, alors que l'on choisit
+           souvent dans les premiers résultats sans rien taper. */
+      } });
   return close;
 }
 
 export function confirmSheet(title, message, { danger = true, okLabel = 'Confirmer' } = {}) {
   return new Promise(resolve => {
+    /* Toute fermeture vaut refus : par le fond, par la touche Échap,
+       ou en tirant la feuille vers le bas. Sans cela, l'appelant
+       restait bloqué sur une promesse jamais tenue et l'écran semblait
+       figé. */
+    let done = false;
+    const answer = (v) => { if (!done) { done = true; resolve(v); } };
     sheet(title, `
       <p class="muted" style="margin:0 0 16px">${esc(message)}</p>
       <div class="btn-row">
         <button class="btn ghost" style="flex:1" data-no>Annuler</button>
         <button class="btn ${danger ? 'danger' : ''}" style="flex:1" data-yes>${esc(okLabel)}</button>
       </div>`,
-      { onMount(el, close) {
-          el.querySelector('[data-no]').onclick = () => { close(); resolve(false); };
-          el.querySelector('[data-yes]').onclick = () => { close(); resolve(true); };
+      { onClose: () => answer(false),
+        onMount(el, close) {
+          el.querySelector('[data-no]').onclick = () => { answer(false); close(); };
+          el.querySelector('[data-yes]').onclick = () => { answer(true); close(); };
         } });
   });
 }
@@ -147,12 +301,28 @@ export const debounce = (fn, ms = 250) => {
   let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 };
 
+/* Enregistrement du fichier sur l'appareil.
+   Le clic programmatique sur un lien de téléchargement échoue
+   silencieusement sur certains navigateurs mobiles — notamment dans
+   une application installée. On vérifie donc que l'attribut est
+   réellement pris en charge et, sinon, on ouvre le fichier dans un
+   onglet : l'utilisateur l'enregistre depuis la visionneuse. */
 export function download(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 4000);
+  const supported = 'download' in a;
+  a.href = url;
+  a.download = filename;
+  a.rel = 'noopener';
+  if (!supported) a.target = '_blank';
+  document.body.appendChild(a);
+  a.click();
+  /* Le lien est retiré au tour de boucle suivant, pas tout de suite :
+     certains navigateurs mobiles lisent le nom de fichier après le
+     clic, et un lien déjà détaché leur fait enregistrer « download ». */
+  setTimeout(() => a.remove(), 0);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return supported;
 }
 
 /* Partage natif (WhatsApp, Mail, SMS…) avec repli sur le
@@ -165,4 +335,16 @@ export async function shareFile(blob, filename, text) {
   }
   download(blob, filename);
   return 'downloaded';
+}
+
+/* Nom de fichier propre : on retire ce qu'aucun système de fichiers
+   n'accepte, on garde les accents et les espaces — c'est le nom que le
+   client verra dans sa pièce jointe, il doit se lire. */
+export function safeName(s, max = 120) {
+  return String(s || '')
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max)
+    .replace(/[. ]+$/, '');
 }

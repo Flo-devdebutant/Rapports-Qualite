@@ -19,6 +19,7 @@ import { lotStats, weightLotStats, weightStats, calibreMin,
          chartModel, labelledPoints, labelAnchor, fmtP, fmtG,
          refSpec, palletSeverity, sevMark, SEV_ORDER, SEV_STEPS, RANGE_TOL } from './pressure.js';
 import { reportType } from './report-types.js';
+import { safeName } from './ui.js';
 
 /* ------------------------- traductions ------------------------- */
 export const LANGS = { fr: 'Français', en: 'English', it: 'Italiano', es: 'Español', nl: 'Nederlands' };
@@ -623,16 +624,39 @@ function splitToWidth(str, size, maxW) {
   return out.length ? out : [''];
 }
 
-/* Nom de fichier lisible par le destinataire, sans accent ni espace. */
-export function pdfFilename(report, group) {
+/* ------------------------- nom du fichier -------------------------
+   Le fichier arrive chez un client ou un fournisseur : son nom doit se
+   lire tel quel dans une pièce jointe, sans avoir à l'ouvrir. D'où des
+   mots entiers, des accents, des espaces — et une composition propre à
+   chaque type de rapport :
+
+     réception   Rapport Qualité Avocat Hass Sol Andino lot 4412
+     expédition  Rapport Qualité Avocat Hass Mtex NL du 21-09-2026
+     production  Rapport Contrôle Qualité Avocat Hass Premium Monoprix du 21-09-2026
+
+   La date s'écrit avec des tirets : la barre oblique est interdite dans
+   un nom de fichier sur tous les systèmes. */
+export function reportFilename(report, group, ext = 'pdf') {
   const d = new Date(report.report_date);
   const p = (n) => String(n).padStart(2, '0');
-  const slug = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_|_$/g, '').toLowerCase();
-  return [
-    slug(report.partner_name) || 'rapport',
-    slug(group?.name || report.product_group_id),
-    slug(report.header?.voyage || report.header?.bl || report.header?.load_id || report.report_no),
-    `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}`
-  ].filter(Boolean).join('_') + '.pdf';
+  const date = `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}`;
+  const h = report.header || {};
+  const produit = [group?.name || report.product_group_id, h.variety].filter(Boolean).join(' ');
+  const partenaire = report.partner_name || '';
+
+  let parts;
+  if (report.type === 'reception') {
+    parts = ['Rapport Qualité', produit, partenaire, h.lot ? `lot ${h.lot}` : ''];
+  } else if (report.type === 'production') {
+    parts = ['Rapport Contrôle Qualité',
+             [produit, h.packaging_kind].filter(Boolean).join(' '),
+             partenaire, `du ${date}`];
+  } else {
+    parts = ['Rapport Qualité', produit, partenaire, `du ${date}`];
+  }
+  const name = safeName(parts.filter(Boolean).join(' '));
+  return (name || 'Rapport Qualité') + '.' + ext;
 }
+
+/* Ancien nom, conservé le temps que les appels existants migrent. */
+export const pdfFilename = (report, group) => reportFilename(report, group, 'pdf');

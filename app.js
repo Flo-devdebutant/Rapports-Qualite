@@ -12,7 +12,7 @@ import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
 import { $, esc, icon, toast } from './ui.js';
 import { logoDataUrl } from './logo.js';
 import { renderFeed, renderReportView } from './reports.js';
-import { renderForm } from './form.js';
+import { renderForm, allDrafts } from './form.js';
 import { renderSettings, renderGroups, renderGroupEditor, renderPartners, renderUsers, renderAccount } from './settings.js';
 import { renderStats } from './stats.js';
 import { TYPE_LIST } from './report-types.js';
@@ -151,21 +151,60 @@ const routes = [
   [/^#\/settings\/account$/,        () => renderAccount()]
 ];
 
+/* Chemin réellement parcouru. La flèche retour doit ramener là d'où
+   l'on vient : depuis l'accueil, un nouveau rapport revient à
+   l'accueil ; depuis le flux, il revient au flux. Une destination
+   écrite en dur dans chaque écran ne peut pas le savoir.
+   On tient notre propre pile plutôt que d'appeler history.back(), qui
+   rejouerait aussi les allers-retours d'un formulaire vers lui-même. */
+const trail = [];
+let goingBack = false;
+
 export function route() {
   const h = location.hash || '#/';
+  if (!goingBack) {
+    /* Une même adresse répétée ne s'empile pas (redessin, filtre). */
+    if (trail[trail.length - 1] !== h) trail.push(h);
+    if (trail.length > 40) trail.shift();
+  }
+  goingBack = false;
   for (const [re, fn] of routes) {
     const m = h.match(re);
     if (m) return fn(m);
   }
   location.hash = '#/';
 }
+
 export const go = (hash) => { location.hash = hash; };
 
+/* Retour d'un écran : on dépile l'écran courant et on rejoue le
+   précédent. `fallback` sert quand la pile est vide — arrivée directe
+   sur une adresse, ou rechargement de la page. */
+export function back(fallback = '#/') {
+  trail.pop();
+  const prev = trail.pop() || fallback;
+  goingBack = true;
+  if ((location.hash || '#/') === prev) { goingBack = false; trail.push(prev); route(); }
+  else location.hash = prev;
+}
+
 /* ============================== ACCUEIL ============================== */
-function renderHome() {
+async function renderHome() {
   const admin = state.profile?.role === 'admin';
   const canWrite = ['admin', 'inspecteur'].includes(state.profile?.role);
+  /* Un rapport commencé et laissé en plan doit se voir dès l'accueil :
+     sinon il n'existe nulle part et l'inspecteur recommence tout. */
+  const drafts = canWrite ? await allDrafts() : [];
   shell(CONFIG.appName, `
+    ${drafts.length ? `<div class="menu" style="margin-bottom:14px">
+      ${drafts.map(d => `
+      <button class="menu-item draft" data-draft="${esc(d.id)}">
+        <span class="ic n">${icon('edit')}</span>
+        <span class="tx"><b>Reprendre : ${esc(reportTypeTitle(d.type))}</b>
+          <span>${esc([d.partner_name, groupById(d.product_group_id)?.name,
+                       d._draftAt ? 'modifié ' + relTime(d._draftAt) : ''].filter(Boolean).join(' · ')) || 'saisie en cours'}</span></span>
+        <span class="chev">›</span></button>`).join('')}
+    </div>` : ''}
     <div class="menu">
       ${canWrite ? TYPE_LIST.map(T => `
       <button class="menu-item" data-go="#/report/new/${T.id}">
@@ -191,7 +230,43 @@ function renderHome() {
     { actions: syncBadge(),
       onMount() {
         document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
+        document.querySelectorAll('[data-draft]').forEach(b => {
+          const d = drafts.find(x => x.id === b.dataset.draft);
+          b.onclick = () => go('#/report/new/' + d.type);
+          /* Appui long : abandonner le brouillon. Le geste reste
+             discret — on ne met pas une croix rouge sur un écran
+             d'accueil — mais il existe. */
+          let t;
+          const start = () => { t = setTimeout(() => dropDraft(d), 600); };
+          const stop  = () => clearTimeout(t);
+          b.addEventListener('pointerdown', start);
+          ['pointerup', 'pointerleave', 'pointercancel'].forEach(e => b.addEventListener(e, stop));
+          b.oncontextmenu = (e) => { e.preventDefault(); stop(); dropDraft(d); };
+        });
       } });
+}
+
+const reportTypeTitle = (t) => (TYPE_LIST.find(x => x.id === t) || TYPE_LIST[0]).title;
+
+/* « il y a 3 min », « hier » — repère suffisant pour reconnaître son
+   propre brouillon sans afficher une date complète. */
+function relTime(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  if (m < 1) return "à l'instant";
+  if (m < 60) return `il y a ${m} min`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `il y a ${h} h`;
+  const j = Math.round(h / 24);
+  return j === 1 ? 'hier' : `il y a ${j} jours`;
+}
+
+async function dropDraft(d) {
+  const copy = { ...d };
+  await local.del('reports', d.id);
+  renderHome();
+  toast('Brouillon supprimé', '', { action: 'Annuler', onAction: async () => {
+    await local.put('reports', copy); renderHome();
+  } });
 }
 
 /* =========================== AUTHENTIFICATION =========================== */

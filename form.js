@@ -7,7 +7,7 @@
    cinq écrans.
    ------------------------------------------------------------------ */
 
-import { state, shell, groupById, go } from './app.js';
+import { state, shell, groupById, go, back } from './app.js';
 import { local, queue, sync } from './store.js';
 import { flatFields, fieldStatus, computeSummary, applyComputed,
          VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
@@ -15,26 +15,41 @@ import { COUNTRIES_FR, countryName } from './countries.js';
 import { pressureConfig, palletStats, lotStats, hasPressures, fmtP,
          weightStats, weightLotStats, calibreMin, fmtG,
          refSpec, partnerRef, palletSeverity, refText, outOfZone,
-         SEV_COLOR, SEV_LABEL, SEV_STEPS, RANGE_TOL } from './pressure.js';
+         SEV_COLOR, SEV_LABEL, SEV_STEPS, RANGE_TOL, LIMITS, clampP } from './pressure.js';
 import { pressureChartSVG } from './pressure-chart.js';
 import { reportType, PACKAGING_KINDS, appliesTo } from './report-types.js';
-import { $, $$, esc, icon, toast, confirmSheet, compressImage, stars } from './ui.js';
+import { $, $$, esc, icon, toast, confirmSheet, compressImage, stars, pickSheet } from './ui.js';
 import { currentUser, storage } from './supa.js';
 
 let draft = null;          // rapport en cours d'édition
 let dirty = false;
+let resumed = false;       // saisie reprise d'un brouillon
 
-export async function renderForm({ type, id }) {
+/* Toute modification marque le rapport et programme l'écriture du
+   brouillon : c'est ce qui fait qu'on ne perd jamais une saisie. */
+const touch = () => { dirty = true; keepDraft(); };
+
+export async function renderForm({ type, id, fresh = false }) {
+  resumed = false;
   if (!state.groups.length) {
     return shell('Rapport', `<div class="empty"><div class="big">📦</div>
       <p>Aucun groupe de produit n'est encore défini.<br>
       Un administrateur doit les créer dans Réglages &gt; Produits &amp; critères.</p></div>`,
-      { back: () => go('#/') });
+      { back: () => back('#/') });
   }
   if (id) {
     draft = await local.get('reports', id);
     if (!draft) { toast('Rapport introuvable', 'err'); return go('#/feed'); }
     draft = structuredClone(draft);
+  } else if (!fresh && await draftFor(type)) {
+    /* Un contrôle s'interrompt tout le temps : un camion arrive, le
+       téléphone s'éteint. La saisie en cours est donc conservée et
+       reprise telle quelle — c'est elle qu'on retrouve en rouvrant ce
+       type de rapport, pas un formulaire vierge. Un bandeau le dit et
+       propose de repartir de zéro : un message fugitif ne suffirait
+       pas, on doit pouvoir y revenir deux minutes plus tard. */
+    draft = structuredClone(await draftFor(type));
+    resumed = true;
   } else {
     const last = await local.meta('lastForm') || {};
     draft = {
@@ -52,7 +67,8 @@ export async function renderForm({ type, id }) {
       photos: [],
       inspector_name: state.profile?.full_name || '',
       created_by: currentUser()?.id,
-      deleted: false
+      deleted: false,
+      _draft: true              // tant qu'il n'est pas validé, il reste local
     };
     const T = reportType(type);
     const allowed = groupChoices(T);
@@ -90,6 +106,10 @@ function paint() {
          ordinateur — où il reste visible sans voler de hauteur. -->
     <aside class="form-side"><div class="card pad stick" id="verdict">${verdictHtml(s)}</div></aside>
     <div class="form-main">
+    ${resumed ? `<div class="resume-box">
+      <span>Brouillon repris — saisie enregistrée automatiquement.</span>
+      <button type="button" class="linkish" id="freshStart">Repartir d'un rapport vierge</button>
+    </div>` : ''}
 
     <details class="sec" open>
       <summary>Général ${caret()}</summary>
@@ -197,11 +217,13 @@ function paint() {
       <summary>Photos <span class="count" id="phCount">${draft.photos.length}</span> ${caret()}</summary>
       <div class="body">
         <div class="photo-grid" id="photos"></div>
-        <!-- Pas d'attribut « capture » : il force l'appareil photo et
-             interdit la galerie. Or le contrôle se fait d'abord, photos
-             comprises, et le rapport se saisit ensuite. Sans lui, le
-             téléphone propose les deux (galerie ou prise de vue). -->
-        <input type="file" id="phInput" accept="image/*" multiple hidden>
+        <!-- Deux champs distincts plutôt qu'un seul : sans l'attribut
+             « capture » le téléphone ouvre la galerie, avec lui il
+             ouvre l'appareil photo, et aucun réglage ne propose les
+             deux de façon fiable. Or les deux servent — on photographie
+             en contrôlant, et on saisit le rapport ensuite. -->
+        <input type="file" id="phCam" accept="image/*" capture="environment" multiple hidden>
+        <input type="file" id="phLib" accept="image/*" multiple hidden>
       </div>
     </details>
 
@@ -281,15 +303,15 @@ function fieldHtml(f) {
 
 /* --------------------------- interactions --------------------------- */
 function wire() {
-  const set = (k, v) => { draft.header[k] = v; dirty = true; };
+  const set = (k, v) => { draft.header[k] = v; touch(); };
 
-  $('#fdate').onchange   = (e) => { draft.report_date = new Date(e.target.value).toISOString(); dirty = true; };
+  $('#fdate').onchange   = (e) => { draft.report_date = new Date(e.target.value).toISOString(); touch(); };
   /* Choisir le client applique sa référence de pression sans autre
      geste — c'est tout l'intérêt du carnet. La saisie manuelle garde
      toujours la priorité, et un client sans référence enregistrée
      laisse simplement le réglage du produit. */
   $('#fpartner').oninput = (e) => {
-    draft.partner_name = e.target.value; dirty = true;
+    draft.partner_name = e.target.value; touch();
     if (draft.header.pressures && applyClientRef()) paintPressures();
   };
   $('#fdept').oninput    = (e) => set('department', e.target.value);
@@ -300,7 +322,7 @@ function wire() {
        lot à deux origines et six calibres, cela évite de la resaisir. */
     const rows = lotLines();
     rows.push({ o: rows[rows.length - 1]?.o || '', c: '', pal: '', col: '' });
-    dirty = true; paintCalibres();
+    touch(); paintCalibres();
   };
   $('#fcarrier').oninput = (e) => set('carrier', e.target.value);
   const loadEl = $('#fload');
@@ -316,7 +338,7 @@ function wire() {
   };
   $('#fbad').oninput     = (e) => set('bad_pallet', e.target.value);
   $('#fcat').onchange    = (e) => set('category', e.target.value);
-  $('#fremarks').oninput = (e) => { draft.remarks = e.target.value; dirty = true; };
+  $('#fremarks').oninput = (e) => { draft.remarks = e.target.value; touch(); };
 
   $('#fgroup').onchange = async (e) => {
     const dirtyData = Object.keys(draft.measures).length || draft.header.pressures?.pallets?.length;
@@ -330,7 +352,7 @@ function wire() {
        l'avocat, 3 pour la mangue : garder les anciennes palettes
        laisserait une grille au mauvais format. */
     delete draft.header.pressures;
-    dirty = true;
+    touch();
     paint();
   };
 
@@ -345,25 +367,25 @@ function wire() {
       const raw = input.value;
       draft.measures[key] = raw === '' ? '' : Number(raw);
       if (input.dataset.computed) draft.measures['_manual_' + key] = raw !== '';
-      dirty = true;
+      touch();
       refresh(key);
     };
 
     const sel = row.querySelector('select');
-    if (sel) sel.onchange = () => { draft.measures[key] = sel.value; dirty = true; refresh(key); };
+    if (sel) sel.onchange = () => { draft.measures[key] = sel.value; touch(); refresh(key); };
 
     row.querySelectorAll('.seg.yn button').forEach(b => b.onclick = () => {
       const val = b.dataset.v === '1';
       draft.measures[key] = draft.measures[key] === val ? '' : val;
       row.querySelectorAll('.seg.yn button').forEach(x =>
         x.setAttribute('aria-pressed', String(draft.measures[key] === (x.dataset.v === '1'))));
-      dirty = true; refresh(key);
+      touch(); refresh(key);
     });
   });
 
   paintPressures();
   paintPhotos();
-  $('#phInput').onchange = async (e) => {
+  const onPick = async (e) => {
     const files = [...e.target.files];
     e.target.value = '';
     for (const file of files) {
@@ -372,10 +394,21 @@ function wire() {
       const localId = crypto.randomUUID();
       await local.put('photos', { id: localId, blob });
       draft.photos.push({ localId, path: `${draft.id}/${localId}.jpg`, uploaded: false, at: Date.now() });
-      dirty = true;
+      touch();
     }
-    paintPressures();
-  paintPhotos();
+    paintPhotos();
+  };
+  $('#phCam').onchange = onPick;
+  $('#phLib').onchange = onPick;
+
+  const fs = $('#freshStart');
+  if (fs) fs.onclick = async () => {
+    if (!(await confirmSheet('Repartir de zéro',
+          'Le brouillon en cours sera supprimé et le formulaire repart vide.', { okLabel: 'Repartir' }))) return;
+    const id = draft.id, type = draft.type;
+    await local.del('reports', id);
+    dirty = false; draft = null;
+    renderForm({ type, fresh: true });
   };
 
   $('#cancel').onclick = () => leave();
@@ -396,8 +429,29 @@ function lotLines() {
   return draft.header.calibres;
 }
 
-const originOptions = (sel) => `<option value="">—</option>` +
-  COUNTRIES_FR.map(c => `<option value="${c.code}"${c.code === sel ? ' selected' : ''}>${esc(c.fr)}</option>`).join('');
+/* Origine et calibre passent par un sélecteur avec recherche : la
+   liste des pays en compte cinquante-sept, et celle des calibres
+   autant que le produit en déclare. Le bouton montre la valeur
+   retenue, la recherche fait le reste. */
+const originLabel = (code) => COUNTRIES_FR.find(c => c.code === (code || '').toUpperCase())?.fr || '';
+
+function pickOrigin(i) {
+  const rows = lotLines();
+  pickSheet('Origine', COUNTRIES_FR.map(c => ({ v: c.code, label: c.fr, hint: c.code })), {
+    value: (rows[i].o || '').toUpperCase(),
+    placeholder: 'Pays (Pérou, Maroc…)',
+    onPick: (v) => { rows[i].o = v; touch(); paintCalibres(); }
+  });
+}
+
+function pickLotCalibre(i) {
+  const rows = lotLines();
+  const all = groupById(draft.product_group_id)?.config?.calibres || [];
+  pickSheet('Calibre', all.map(c => ({ v: c, label: c })), {
+    value: rows[i].c || '', allowFree: true, placeholder: 'Calibre (16, 18, A…)',
+    onPick: (v) => { rows[i].c = v; touch(); paintCalibres(); }
+  });
+}
 
 function paintCalibres() {
   const box = $('#calRows');
@@ -409,9 +463,11 @@ function paintCalibres() {
   box.innerHTML = rows.map((r, i) => `
     <div class="cal-row" data-i="${i}">
       <span class="lot-f"><label>Origine</label>
-        <select data-f="o">${originOptions((r.o || '').toUpperCase())}</select></span>
+        <button type="button" class="picker" data-pick="o">${
+          r.o ? esc(originLabel(r.o) || r.o) : '<i>Choisir…</i>'}</button></span>
       <span class="lot-f"><label>Calibre</label>
-        <input type="text" list="calList" value="${esc(r.c || '')}" data-f="c"></span>
+        <button type="button" class="picker" data-pick="c">${
+          r.c ? esc(r.c) : '<i>Choisir…</i>'}</button></span>
       <button type="button" class="icon-btn" aria-label="Retirer cette ligne" data-del>${icon('x')}</button>
       <span class="lot-f"><label>Palettes</label>
         <input type="number" inputmode="decimal" step="0.01" value="${r.pal ?? ''}" data-f="pal"></span>
@@ -421,11 +477,13 @@ function paintCalibres() {
 
   box.querySelectorAll('.cal-row').forEach(row => {
     const i = +row.dataset.i;
+    row.querySelector('[data-pick="o"]').onclick = () => pickOrigin(i);
+    row.querySelector('[data-pick="c"]').onclick = () => pickLotCalibre(i);
     row.querySelectorAll('[data-f]').forEach(inp => {
       const f = inp.dataset.f;
       const handler = () => {
         rows[i][f] = (f === 'c' || f === 'o') ? inp.value : (inp.value === '' ? '' : Number(inp.value));
-        dirty = true;
+        touch();
         syncCalibreTotals();
       };
       if (inp.tagName === 'SELECT') inp.onchange = handler; else inp.oninput = handler;
@@ -433,7 +491,7 @@ function paintCalibres() {
     row.querySelector('[data-del]').onclick = () => {
       rows.splice(i, 1);
       if (!rows.length) rows.push({ o: '', c: '', pal: '', col: '' });
-      dirty = true;
+      touch();
       paintCalibres();
       syncCalibreTotals();
     };
@@ -533,16 +591,57 @@ async function paintPhotos() {
     cell.querySelector('button').onclick = async () => {
       if (!(await confirmSheet('Supprimer la photo', 'Cette photo sera retirée du rapport.'))) return;
       if (p.localId) await local.del('photos', p.localId);
-      draft.photos.splice(i, 1); dirty = true; paintPhotos();
+      draft.photos.splice(i, 1); touch(); paintPhotos();
     };
     grid.appendChild(cell);
   }
-  const add = document.createElement('button');
-  add.type = 'button'; add.className = 'photo-add';
-  add.innerHTML = `${icon('camera')}<span>Ajouter</span>`;
-  add.onclick = () => $('#phInput').click();
-  grid.appendChild(add);
+  /* Deux vignettes d'ajout : prendre une photo, ou en choisir dans la
+     galerie. Le contrôle se fait souvent appareil en main, mais le
+     rapport se saisit après coup, au bureau — les deux chemins
+     servent, et aucun ne doit demander de chercher où il est passé. */
+  for (const [id, ic, label] of [['#phCam', 'camera', 'Photo'], ['#phLib', 'image', 'Galerie']]) {
+    const add = document.createElement('button');
+    add.type = 'button'; add.className = 'photo-add';
+    add.innerHTML = `${icon(ic)}<span>${label}</span>`;
+    add.onclick = () => $(id).click();
+    grid.appendChild(add);
+  }
   const c = $('#phCount'); if (c) c.textContent = draft.photos.length;
+}
+
+/* ------------------------------ brouillon ------------------------------
+   Un rapport non validé vit dans la base locale avec `_draft`. Il n'est
+   jamais poussé au serveur — l'équipe n'a pas à voir une saisie en
+   cours — et le flux ne l'affiche pas comme un rapport. */
+export async function draftFor(type) {
+  const all = await local.all('reports');
+  return all.filter(r => r._draft && r.type === type && !r.deleted)
+            .sort((a, b) => new Date(b.report_date) - new Date(a.report_date))[0] || null;
+}
+
+export async function allDrafts() {
+  const all = await local.all('reports');
+  return all.filter(r => r._draft && !r.deleted)
+            .sort((a, b) => (b._draftAt || 0) - (a._draftAt || 0));
+}
+
+/* Écriture silencieuse, sans bloquer la frappe : on rassemble les
+   sauvegardes rapprochées. */
+let saveTimer = null;
+function keepDraft() {
+  if (!draft || !draft._draft) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    if (!draft || !draft._draft) return;
+    try { await local.put('reports', { ...draft, _draftAt: Date.now() }); } catch {}
+  }, 600);
+}
+
+async function keepDraftNow() {
+  clearTimeout(saveTimer);
+  if (!draft || !draft._draft) return;
+  if (!dirty && !draft._draftAt) return;
+  try { await local.put('reports', { ...draft, _draftAt: Date.now() }); } catch {}
 }
 
 /* ----------------------------- sauvegarde ----------------------------- */
@@ -580,7 +679,9 @@ async function save() {
       draft.header.carrier = c.name;
     }
 
-    draft._dirty = true;
+    delete draft._draft;            // validé : il rejoint le flux de l'équipe
+    delete draft._draftAt;
+    draft._dirty = true;            // à pousser au serveur
     await local.put('reports', draft);
     await queue('report', { id: draft.id });
     await local.meta('lastForm', { product_group_id: draft.product_group_id, department: draft.header.department });
@@ -674,9 +775,21 @@ function refSourceHtml(p) {
   return (p.refSource === 'manuel' ? 'Ajustée à la main pour ce rapport.' : 'Valeur par défaut du produit.') + back;
 }
 
-function wireRefBack(p) {
-  const back = $('#prRefBack');
-  if (back) back.onclick = () => { applyClientRef({ force: true }); dirty = true; paintPressures(); };
+/* Le lien « Reprendre celle du client » vit dans un paragraphe réécrit
+   à chaque frappe. Un gestionnaire posé dessus disparaîtrait avec lui :
+   quitter le champ de saisie détruisait le bouton juste avant qu'il
+   reçoive le clic, et rien ne se passait. On écoute donc depuis le
+   bloc de référence, qui, lui, survit à la réécriture. */
+function wireRefBack() {
+  const box = $('.ref-box');
+  if (!box || box.dataset.wired) return;
+  box.dataset.wired = '1';
+  box.addEventListener('click', (e) => {
+    if (!e.target.closest('#prRefBack')) return;
+    applyClientRef({ force: true });
+    touch();
+    paintPressures();
+  });
 }
 
 /* Bloc de réglage de la référence, en tête de la section Pressions. */
@@ -692,19 +805,24 @@ function refHtml(p) {
     </div>
     ${p.mode === 'range' ? `
       <div class="ref-in">
-        <label>Mini <input type="number" inputmode="decimal" step="0.1" id="prMin" value="${p.rmin ?? ''}"></label>
-        <label>Maxi <input type="number" inputmode="decimal" step="0.1" id="prMax" value="${p.rmax ?? ''}"></label>
+        <label>Mini <input type="number" inputmode="decimal" step="0.1"
+          min="${LIMITS.min}" max="${LIMITS.max}" id="prMin" value="${p.rmin ?? ''}"></label>
+        <label>Maxi <input type="number" inputmode="decimal" step="0.1"
+          min="${LIMITS.min}" max="${LIMITS.max}" id="prMax" value="${p.rmax ?? ''}"></label>
         <span class="u">${esc(p.unit || 'kg')}</span>
       </div>
       <p class="hint">Dans la plage : conforme. ${RANGE_TOL} point de débordement toléré ;
          au-delà, l'écart est critique et la palette non conforme.</p>`
     : `
       <div class="ref-in">
-        <label>Cible <input type="number" inputmode="decimal" step="0.1" id="prRef" value="${p.ref ?? ''}"></label>
+        <label>Cible <input type="number" inputmode="decimal" step="0.1"
+          min="${LIMITS.min}" max="${LIMITS.max}" id="prRef" value="${p.ref ?? ''}"></label>
         <span class="u">${esc(p.unit || 'kg')}</span>
       </div>
       <p class="hint">Écart toléré ${SEV_STEPS.ok} point ; jusqu'à ${SEV_STEPS.mineur} l'écart est mineur,
          jusqu'à ${SEV_STEPS.majeur} majeur, au-delà critique.</p>`}
+    <p class="hint">Le pénétromètre mesure de ${LIMITS.min} à ${LIMITS.max} ${esc(p.unit || 'kg')} :
+       toute valeur hors de cet intervalle est ramenée à la borne.</p>
     <p class="hint" id="prSrc">${refSourceHtml(p)}</p>
     ${s ? `<p class="hint">Le barème ne s'applique qu'à la moyenne de chaque palette, jamais à un fruit isolé.</p>` : ''}
   </div>`;
@@ -718,7 +836,9 @@ function paintPressures() {
   const n = slots(p);
   /* Le nombre de palettes est lu au moment du clic, pas au rendu : la
      section Palettisation est souvent remplie après cette section. */
-  const expected = () => Math.max(1, Math.round(Number(draft.measures.pal_count) || 0));
+  const expected = () => Math.max(1, palletCap() || Math.round(Number(draft.measures.pal_count) || 0));
+  const cap = palletCap();
+  const full = cap > 0 && p.pallets.length >= cap;
 
   const T = reportType(draft.type);
   const fillAt = fillValue(p, cfg);
@@ -732,9 +852,14 @@ function paintPressures() {
     <div class="btn-row" style="margin:12px 0">
       <button type="button" class="btn ghost sm" id="prFill">
         ${icon('check')} Tout à ${fmtP(fillAt).replace('.0', '')} ${esc(p.unit || 'kg')}</button>
-      <button type="button" class="btn ghost sm" id="prAdd">${icon('plus')} Palette</button>
+      <button type="button" class="btn ghost sm" id="prAdd"${full ? ' disabled' : ''}>${icon('plus')} Palette</button>
       ${p.pallets.length ? `<button type="button" class="btn ghost sm" id="prClear">Tout effacer</button>` : ''}
     </div>
+    ${cap ? `<p class="hint" style="margin:-4px 0 10px">${
+      full ? `Les ${cap} palettes annoncées dans le détail du lot sont toutes contrôlées.`
+           : `${p.pallets.length} palette${p.pallets.length > 1 ? 's' : ''} sur les ${cap} annoncées${
+               remainingText() ? ` — reste ${remainingText()}` : ''}.`}</p>` : ''}
+    ${overText() ? `<div class="err-box" style="margin:0 0 10px">${esc(overText())}</div>` : ''}
     <div id="prList"></div>
     ${p.pallets.length ? `<div class="card pad" style="margin-top:12px" id="prPreview"></div>` : ''}`;
 
@@ -748,58 +873,77 @@ function paintPressures() {
   $('#prFill').onclick = () => {
     const ref = fillValue(p, cfg);
     const count = p.pallets.length || expected();
+    /* On respecte la répartition annoncée : deux palettes en 18, une
+       en 20, une en 22 donnent exactement ces quatre palettes-là. */
+    const spread = calibreSpread(count);
     p.pallets = Array.from({ length: count }, (_, i) => ({
       n: p.pallets[i]?.n ?? String(i + 1),
-      cal: p.pallets[i]?.cal ?? defaultCalibre(),
+      cal: p.pallets[i]?.cal ?? spread[i] ?? '',
       v: Array.from({ length: n }, () => ref),
       w: p.pallets[i]?.w ?? Array.from({ length: p.fruits }, () => '')
     }));
-    dirty = true; paintPressures();
+    touch(); paintPressures();
     toast(`${count} palette${count > 1 ? 's' : ''} à ${fmtP(ref).replace('.0', '')} ${p.unit || 'kg'}`);
   };
   $('#prAdd').onclick = () => {
+    if (palletCap() && p.pallets.length >= palletCap())
+      return toast(`Le lot n'annonce que ${palletCap()} palettes.`, 'err');
     p.pallets.push({
       n: String(p.pallets.length + 1), cal: defaultCalibre(),
       v: Array.from({ length: n }, () => ''),
       w: Array.from({ length: p.fruits }, () => '')
     });
-    dirty = true; paintPressures();
+    touch(); paintPressures();
   };
   const clr = $('#prClear');
   if (clr) clr.onclick = async () => {
     if (!(await confirmSheet('Effacer les pressions', 'Tous les relevés saisis seront supprimés.'))) return;
-    p.pallets = []; dirty = true; paintPressures();
+    p.pallets = []; touch(); paintPressures();
   };
 
   list.querySelectorAll('.pal').forEach(card => {
     const i = +card.dataset.i;
-    card.querySelector('[data-n]').oninput = (e) => { p.pallets[i].n = e.target.value; dirty = true; };
+    card.querySelector('[data-n]').oninput = (e) => { p.pallets[i].n = e.target.value; touch(); };
     const calSel = card.querySelector('[data-cal]');
     if (calSel) calSel.onchange = () => {
-      p.pallets[i].cal = calSel.value; dirty = true; paintPressures();
+      /* L'option porte le reste entre parenthèses : on ne garde que le
+         calibre lui-même. */
+      p.pallets[i].cal = calSel.value.replace(/\s*\(\d+ restantes?\)$/, '');
+      touch(); paintPressures();
     };
     card.querySelectorAll('[data-w]').forEach(inp => inp.oninput = () => {
       const k = +inp.dataset.w;
       p.pallets[i].w[k] = inp.value === '' ? '' : Number(inp.value);
       const min = calibreMin(groupById(draft.product_group_id), p.pallets[i].cal);
       inp.classList.toggle('off', inp.value !== '' && min != null && Number(inp.value) < min);
-      dirty = true;
+      touch();
       refreshPalletAvg(card, p.pallets[i]);
     });
-    card.querySelectorAll('[data-v]').forEach(inp => inp.oninput = () => {
+    card.querySelectorAll('[data-v]').forEach(inp => {
+      inp.onblur = () => {
+        if (inp.value === '') return;
+        const c = clampP(inp.value);
+        if (c != null && c !== Number(inp.value)) {
+          inp.value = String(c);
+          inp.dispatchEvent(new Event('input'));
+          toast(`Pression ramenée à ${c} : la mesure va de ${LIMITS.min} à ${LIMITS.max}.`);
+        }
+      };
+      inp.oninput = () => {
       const k = +inp.dataset.v;
       p.pallets[i].v[k] = inp.value === '' ? '' : Number(inp.value);
       /* Un fruit qui s'écarte nettement de la zone acceptée se signale
          de lui-même pendant la saisie. Ce n'est qu'un repère visuel :
          la gravité, elle, ne se calcule que sur la moyenne. */
       inp.classList.toggle('off', inp.value !== '' && outOfZone(inp.value, spec()) > OUTLIER);
-      dirty = true;
+      touch();
       refreshPalletAvg(card, p.pallets[i]);
       paintPressurePreview();
       refreshVerdict();
+      };
     });
     card.querySelector('[data-del]').onclick = () => {
-      p.pallets.splice(i, 1); dirty = true; paintPressures();
+      p.pallets.splice(i, 1); touch(); paintPressures();
     };
   });
 
@@ -820,7 +964,7 @@ function fillValue(p, cfg) {
 }
 
 function wireRef(p) {
-  const mark = () => { p.refSource = 'manuel'; dirty = true; };
+  const mark = () => { p.refSource = 'manuel'; touch(); };
   $$('#prMode button').forEach(b => b.onclick = () => {
     if (b.dataset.m === p.mode) return;
     p.mode = b.dataset.m;
@@ -833,12 +977,26 @@ function wireRef(p) {
     }
     mark(); paintPressures();
   });
-  const ref = $('#prRef');
-  if (ref) ref.oninput = () => { p.ref = ref.value === '' ? null : Number(ref.value); mark(); afterRef(); };
-  const lo = $('#prMin'), hi = $('#prMax');
-  if (lo) lo.oninput = () => { p.rmin = lo.value === '' ? null : Number(lo.value); mark(); afterRef(); };
-  if (hi) hi.oninput = () => { p.rmax = hi.value === '' ? null : Number(hi.value); mark(); afterRef(); };
-  wireRefBack(p);
+  /* On borne à la sortie du champ plutôt qu'à chaque frappe : corriger
+     « 1 » en « 13 » passerait par « 1 », et un bornage immédiat
+     empêcherait de taper le second chiffre. */
+  const bindRef = (el, key) => {
+    if (!el) return;
+    el.oninput = () => { p[key] = el.value === '' ? null : Number(el.value); mark(); afterRef(); };
+    el.onblur  = () => {
+      if (el.value === '') return;
+      const c = clampP(el.value);
+      if (c != null && c !== Number(el.value)) {
+        el.value = String(c);
+        toast(`Référence ramenée à ${c} ${p.unit || 'kg'} : la mesure va de ${LIMITS.min} à ${LIMITS.max}.`);
+      }
+      p[key] = c; mark(); afterRef();
+    };
+  };
+  bindRef($('#prRef'), 'ref');
+  bindRef($('#prMin'), 'rmin');
+  bindRef($('#prMax'), 'rmax');
+  wireRefBack();
 }
 
 /* Changer la référence ne touche à aucune mesure : on ne redessine que
@@ -851,22 +1009,108 @@ function afterRef() {
     fmtP(fillValue(p, pressureConfig(groupById(draft.product_group_id)))).replace('.0', '')} ${esc(p.unit || 'kg')}`;
   /* La provenance de la référence change dès la première frappe : on
      la réécrit sans toucher aux champs, pour ne pas voler le focus. */
+  /* On ne réécrit la ligne que si elle change vraiment. Sinon, quitter
+     le champ de saisie remplaçait le bouton « Reprendre celle du
+     client » entre l'appui et le relâchement du doigt : le clic
+     n'atteignait plus rien et le bouton semblait mort. */
   const src = $('#prSrc');
-  if (src) { src.innerHTML = refSourceHtml(p); wireRefBack(p); }
+  if (src) {
+    const html = refSourceHtml(p);
+    if (src.innerHTML !== html) { src.innerHTML = html; wireRefBack(); }
+  }
   paintPressurePreview();
   $$('.pal').forEach(card => repaintOff(card, p.pallets[+card.dataset.i]));
   refreshVerdict();
 }
 
+/* ------------------- calibres disponibles -------------------
+   Le détail du lot dit ce qu'il y a réellement sur le quai : deux
+   palettes en 18, une en 20, une en 22. Le contrôle par palette ne
+   peut donc pas inventer une cinquième palette, ni proposer un
+   troisième 18. On tient un décompte : chaque palette déjà saisie
+   consomme une unité de son calibre, et ce qui reste détermine ce
+   qu'on propose ensuite. Un calibre changé à la main rend aussitôt
+   sa place — c'est le cas de l'inspecteur qui commence par les 20. */
+function lotQuota() {
+  const q = new Map();
+  let total = 0, declared = false;
+  for (const r of (draft.header.calibres || [])) {
+    const n = Number(r.pal);
+    if (!isFinite(n) || n <= 0) continue;
+    declared = true;
+    const cal = (r.c || '').trim();
+    total += n;
+    if (cal) q.set(cal, (q.get(cal) || 0) + n);
+  }
+  return { q, total: Math.round(total), declared };
+}
+
+/* Ce qu'il reste par calibre une fois les palettes déjà saisies
+   défalquées. `skip` exclut une palette — celle dont on est en train
+   de changer le calibre, qui ne doit pas se bloquer elle-même. */
+function calibreRemaining(skip = -1) {
+  const { q } = lotQuota();
+  const left = new Map(q);
+  (draft.header.pressures?.pallets || []).forEach((pal, i) => {
+    if (i === skip) return;
+    const c = (pal.cal || '').trim();
+    if (left.has(c)) left.set(c, left.get(c) - 1);
+  });
+  return left;
+}
+
 /* Calibres proposés pour une palette : ceux du lot d'abord — c'est ce
-   qu'on conditionne — puis le reste de la grille produit. */
+   qu'on conditionne — puis le reste de la grille produit, pour le cas
+   où rien n'a été déclaré. */
 function calibreOptions() {
   const group = groupById(draft.product_group_id);
-  const fromLot = (draft.header.calibres || []).map(c => c.c).filter(Boolean);
+  const fromLot = (draft.header.calibres || []).map(c => (c.c || '').trim()).filter(Boolean);
   const all = group?.config?.calibres || [];
   return [...new Set([...fromLot, ...all])];
 }
-const defaultCalibre = () => calibreOptions()[0] || '';
+
+/* Le calibre proposé à la palette suivante : le premier du lot qui a
+   encore de la place. Rien de déclaré : on garde le premier calibre
+   connu, comme avant. */
+function defaultCalibre(skip = -1) {
+  const { declared } = lotQuota();
+  if (!declared) return calibreOptions()[0] || '';
+  const left = calibreRemaining(skip);
+  for (const [cal, n] of left) if (n > 0) return cal;
+  return '';
+}
+
+/* Nombre de palettes annoncé au lot : plafond du contrôle par palette. */
+const palletCap = () => { const { total, declared } = lotQuota(); return declared ? total : 0; };
+
+/* Écart entre les palettes contrôlées et ce que le lot annonce. Le
+   contrôleur reste libre de corriger un calibre à la main ; s'il en
+   met plus qu'il n'en existe, on le lui dit plutôt que de l'empêcher
+   de saisir ce qu'il a réellement sous les yeux. */
+function overText() {
+  const over = [...calibreRemaining()].filter(([, n]) => n < 0)
+    .map(([c, n]) => `${-n} de trop en ${c}`);
+  if (!over.length) return '';
+  return `Le détail du lot n'annonce pas autant de palettes : ${over.join(', ')}. ` +
+         `Corrigez le détail du lot, ou le calibre d'une palette.`;
+}
+
+/* « 1 × 18, 1 × 22 » — ce qu'il reste à contrôler, dit en clair. */
+function remainingText() {
+  const left = [...calibreRemaining()].filter(([, n]) => n > 0);
+  return left.map(([c, n]) => `${n} × ${c}`).join(', ');
+}
+
+/* Répartition complète pour le remplissage en un clic : autant de
+   palettes par calibre que le lot en annonce, dans l'ordre déclaré. */
+function calibreSpread(count) {
+  const { q, declared } = lotQuota();
+  if (!declared) return Array.from({ length: count }, () => calibreOptions()[0] || '');
+  const out = [];
+  for (const [cal, n] of q) for (let k = 0; k < n && out.length < count; k++) out.push(cal);
+  while (out.length < count) out.push('');
+  return out;
+}
 
 /* Un fruit isolé est signalé au-delà de deux points hors de la zone
    acceptée : assez large pour ne pas clignoter sur un lot normal,
@@ -881,13 +1125,24 @@ function palletHtml(pal, i, p) {
   const wst = weightStats(pal, min);
   const sp = spec();
   const opts = calibreOptions();
+  const left = calibreRemaining(i);
 
   return `<div class="pal" data-i="${i}">
     <div class="pal-top">
       <span class="nm"><input type="text" data-n value="${esc(String(pal.n ?? ''))}" aria-label="N° de palette"></span>
       ${T.weights ? `<span class="cal"><select data-cal aria-label="Calibre de la palette">
         <option value="">calibre</option>
-        ${opts.map(c => `<option${c === pal.cal ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+        ${opts.map(c => {
+          /* Le reste annoncé s'affiche à côté du calibre. Rien n'est
+             barré : c'est le choix AUTOMATIQUE qui respecte le
+             décompte, la correction manuelle reste libre — un
+             inspecteur qui commence par les 20 doit pouvoir le dire,
+             même si le reste est déjà réparti. L'écart éventuel avec
+             le lot est signalé juste en dessous. */
+          const n = left.has(c) ? left.get(c) : null;
+          return `<option${c === pal.cal ? ' selected' : ''}>${
+            esc(c)}${n != null ? ` (${Math.max(0, n)} restante${n > 1 ? 's' : ''})` : ''}</option>`;
+        }).join('')}
       </select></span>` : ''}
       <span class="avg">${resumeHtml(st, wst, sp, p)}</span>
       <button type="button" class="icon-btn" data-del aria-label="Retirer la palette">${icon('x')}</button>
@@ -902,6 +1157,7 @@ function palletHtml(pal, i, p) {
           const v = pal.v?.[k];
           const off = v !== '' && v != null && outOfZone(v, sp) > OUTLIER;
           return `<input type="number" inputmode="decimal" step="0.1" data-v="${k}"
+            min="${LIMITS.min}" max="${LIMITS.max}"
             class="${off ? 'off' : ''}" value="${v ?? ''}" aria-label="Fruit ${f + 1} mesure ${sd + 1}">`;
         }).join('')).join('')}
     </div>
@@ -991,10 +1247,20 @@ async function nextNumber() {
 }
 
 async function leave() {
-  if (dirty && !(await confirmSheet('Quitter sans enregistrer', 'Les saisies non enregistrées seront perdues.', { okLabel: 'Quitter' })))
-    return;
+  /* Sur une saisie neuve, plus de « vos saisies seront perdues » :
+     elles ne le sont plus, le brouillon reste. Sur la modification
+     d'un rapport déjà enregistré, en revanche, il n'y a pas de
+     brouillon où se replier — la question garde tout son sens. */
+  await keepDraftNow();
+  const isDraft = !!draft?._draft;
+  if (!isDraft && dirty && !(await confirmSheet(
+        'Quitter sans enregistrer',
+        'Ce rapport est déjà enregistré : les modifications en cours seront perdues.',
+        { okLabel: 'Quitter' }))) return;
+  const kept = dirty && isDraft;
   dirty = false;
-  go('#/feed');
+  back('#/');
+  if (kept) toast('Brouillon conservé — reprenez quand vous voulez', '', { ms: 4000 });
 }
 
 const toLocalInput = (iso) => {

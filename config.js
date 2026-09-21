@@ -11,5 +11,5 @@ export const CONFIG = {
   supabaseUrl: 'https://tezqfezcziyarxnekxbu.supabase.co',
   supabaseKey: 'sb_publishable_yU0m0o8H70OvAKM6bNQltQ_W0TifL7k',
   appName: 'Mehadrin QC',
-  version: '1.8.0'
+  version: '2.0.0'
 };
