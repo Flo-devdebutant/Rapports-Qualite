@@ -15,6 +15,7 @@ import { renderFeed, renderReportView } from './reports.js';
 import { renderForm } from './form.js';
 import { renderSettings, renderGroups, renderGroupEditor, renderPartners, renderUsers, renderAccount } from './settings.js';
 import { renderStats } from './stats.js';
+import { TYPE_LIST } from './report-types.js';
 
 export const state = {
   profile: null,
@@ -166,15 +167,11 @@ function renderHome() {
   const canWrite = ['admin', 'inspecteur'].includes(state.profile?.role);
   shell(CONFIG.appName, `
     <div class="menu">
-      ${canWrite ? `
-      <button class="menu-item" data-go="#/report/new/reception">
-        <span class="ic">${icon('down')}</span>
-        <span class="tx"><b>Rapport de réception</b><span>Contrôle d'un lot à l'arrivée</span></span>
-        <span class="chev">›</span></button>
-      <button class="menu-item" data-go="#/report/new/expedition">
-        <span class="ic g">${icon('share')}</span>
-        <span class="tx"><b>Rapport d'expédition</b><span>Contrôle avant départ client</span></span>
-        <span class="chev">›</span></button>` : ''}
+      ${canWrite ? TYPE_LIST.map(T => `
+      <button class="menu-item" data-go="#/report/new/${T.id}">
+        <span class="ic ${T.tone}">${icon(T.icon)}</span>
+        <span class="tx"><b>${esc(T.title)}</b><span>${esc(T.subtitle)}</span></span>
+        <span class="chev">›</span></button>`).join('') : ''}
       <button class="menu-item" data-go="#/feed">
         <span class="ic n">${icon('feed')}</span>
         <span class="tx"><b>Flux des rapports</b><span>Tous les contrôles de l'équipe</span></span>

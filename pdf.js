@@ -88,6 +88,9 @@ export class PDF {
   constructor() {
     this.pages = [];
     this.images = [];       // { bytes, w, h, comps }
+    /* Le pied de page part chez le destinataire au même titre que le
+       reste : il doit suivre la langue choisie. */
+    this.footer = (i, n) => `Page ${i} sur ${n}`;
     this.newPage();
   }
 
@@ -117,8 +120,39 @@ export class PDF {
     return this;
   }
 
-  line(x1, y1, x2, y2, { color = ACCENT, w = 1 } = {}) {
-    this.ops.push(`${color.join(' ')} RG ${w} w ${f(x1)} ${f(A4.h - y1)} m ${f(x2)} ${f(A4.h - y2)} l S`);
+  line(x1, y1, x2, y2, { color = ACCENT, w = 1, dash = null } = {}) {
+    const d = dash ? `[${dash.join(' ')}] 0 d ` : '';
+    this.ops.push(`q ${d}${color.join(' ')} RG ${w} w ${f(x1)} ${f(A4.h - y1)} m ${f(x2)} ${f(A4.h - y2)} l S Q`);
+    return this;
+  }
+
+  /* Polyligne ou polygone : la courbe de pression et les marques de
+     gravité ont besoin d'un tracé continu, que `line` ne sait pas
+     faire. */
+  poly(pts, { fill = null, stroke = null, w = 1.6, close = false } = {}) {
+    if (pts.length < 2) return this;
+    let op = 'q ';
+    if (fill)   op += `${fill.join(' ')} rg `;
+    if (stroke) op += `${stroke.join(' ')} RG ${w} w 1 J 1 j `;
+    op += pts.map((p, i) => `${f(p.x)} ${f(A4.h - p.y)} ${i ? 'l' : 'm'}`).join(' ');
+    if (close) op += ' h';
+    op += ` ${fill && stroke ? 'B' : fill ? 'f' : 'S'} Q`;
+    this.ops.push(op);
+    return this;
+  }
+
+  circle(cx, cy, r, { fill = null, stroke = null, w = 1 } = {}) {
+    const k = r * 0.5523, y = A4.h - cy;
+    let op = 'q ';
+    if (fill)   op += `${fill.join(' ')} rg `;
+    if (stroke) op += `${stroke.join(' ')} RG ${w} w `;
+    op += `${f(cx - r)} ${f(y)} m ` +
+          `${f(cx - r)} ${f(y + k)} ${f(cx - k)} ${f(y + r)} ${f(cx)} ${f(y + r)} c ` +
+          `${f(cx + k)} ${f(y + r)} ${f(cx + r)} ${f(y + k)} ${f(cx + r)} ${f(y)} c ` +
+          `${f(cx + r)} ${f(y - k)} ${f(cx + k)} ${f(y - r)} ${f(cx)} ${f(y - r)} c ` +
+          `${f(cx - k)} ${f(y - r)} ${f(cx - r)} ${f(y - k)} ${f(cx - r)} ${f(y)} c `;
+    op += `${fill && stroke ? 'B' : fill ? 'f' : 'S'} Q`;
+    this.ops.push(op);
     return this;
   }
 
@@ -232,7 +266,9 @@ export class PDF {
         const st = (v && typeof v === 'object') ? v.s : null;
         let tx = x + 1;
         if (st) { this.badge(x + 1, this.y + 1, st, 8); tx = x + 13; }
-        cells[i].forEach((ln, k) => this.text(ln, tx, this.y + 8 + k * 10, { size: 8.4 }));
+        const col = (v && typeof v === 'object' && v.color) ? v.color : BLACK;
+        const bold = !!(v && typeof v === 'object' && v.bold);
+        cells[i].forEach((ln, k) => this.text(ln, tx, this.y + 8 + k * 10, { size: 8.4, color: col, bold }));
         x += W[i];
       });
       this.y += rh;
@@ -266,7 +302,8 @@ export class PDF {
     obj(2, `<< /Type /Pages /Kids [${pageIds.map(i => `${i} 0 R`).join(' ')}] /Count ${nPages} >>`);
 
     this.pages.forEach((p, i) => {
-      const footer = `BT /F1 7.5 Tf ${GREY.join(' ')} rg 1 0 0 1 ${f(A4.w - M - textWidth(`Page ${i + 1} sur ${nPages}`, 7.5, false))} ${f(M * 0.6)} Tm (${esc(winAnsi(`Page ${i + 1} sur ${nPages}`))}) Tj ET`;
+      const label = this.footer(i + 1, nPages);
+      const footer = `BT /F1 7.5 Tf ${GREY.join(' ')} rg 1 0 0 1 ${f(A4.w - M - textWidth(label, 7.5, false))} ${f(M * 0.6)} Tm (${esc(winAnsi(label))}) Tj ET`;
       const stream = p.ops.join('\n') + '\n' + footer;
       const body = strBytes(stream);
       offsets[contentIds[i]] = len;
@@ -316,6 +353,35 @@ function strBytes(s) {
   return out;
 }
 
-export const COLORS = { ACCENT, GREEN, RED, AMBER, GREY, BLACK };
+/* Palette du graphique de pression, validée pour un fond blanc :
+   orange de marque assombri (contraste ≥ 3:1) et gris de dispersion. */
+const SERIES = [0.922, 0.408, 0.204];   // #eb6834
+const GRID   = [0.898, 0.906, 0.918];
+
+/* Palette d'état de la charte data-viz, identique à l'écran — le
+   client qui compare le PDF à ce qu'a vu l'inspecteur doit retrouver
+   les mêmes couleurs. Chacune est toujours doublée d'une forme et
+   d'un mot : imprimé en noir et blanc, le rapport reste lisible. */
+const SEV = {
+  ok:       [0.047, 0.639, 0.047],   // #0ca30c
+  mineur:   [0.980, 0.698, 0.098],   // #fab219
+  majeur:   [0.925, 0.514, 0.353],   // #ec835a
+  critique: [0.816, 0.231, 0.231]    // #d03b3b
+};
+const ZONE     = [0.878, 0.949, 0.878];  // vert pâle, zone acceptée
+const ZONE_TOL = [0.941, 0.976, 0.941];  // plus pâle encore, tolérance
+
+/* Pour du TEXTE, les teintes ci-dessus sont trop claires sur blanc —
+   le jaune d'état tombe à 1,8:1. Un mot ou un nombre coloré prend
+   donc le cran plus foncé de la même teinte, mesuré à 4,4:1 au moins.
+   Les marques du graphique gardent SEV : la forme les distingue. */
+const SEV_INK = {
+  ok:       [0.039, 0.541, 0.039],   // #0a8a0a
+  mineur:   [0.604, 0.388, 0.000],   // #9a6300
+  majeur:   [0.659, 0.290, 0.133],   // #a84a22
+  critique: [0.816, 0.231, 0.231]    // #d03b3b
+};
+
+export const COLORS = { ACCENT, GREEN, RED, AMBER, GREY, BLACK, SERIES, GRID, SEV, SEV_INK, ZONE, ZONE_TOL };
 export const PAGE = A4;
 export const MARGIN = M;

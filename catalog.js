@@ -34,8 +34,8 @@ const EMBALLAGE = {
 const PALETTISATION = {
   id: 'palettisation', label: 'Palettisation',
   fields: [
-    { key: 'pal_count', label: 'N° de palettes', type: 'num', step: 0.01 },
-    { key: 'col_count', label: 'N° de colis',    type: 'num', step: 1 },
+    { key: 'pal_count', label: 'Nombre de palettes', type: 'num', step: 0.01 },
+    { key: 'col_count', label: 'Nombre de colis',   type: 'num', step: 1 },
     { key: 'pal_state', label: 'État palettisation', type: 'choice', severity: 'mineur',
       options: [ {v:'Bonne', s:'ok'}, {v:'Acceptable', s:'warn'}, {v:'Mauvaise', s:'fail'} ] }
   ]
@@ -86,6 +86,15 @@ const AVOCAT = {
     calibres: ['4','6','8','10','12','14','16','18','20','22','24','26','28','30','32','S'],
     categories: ['Extra', 'I', 'II'],
     tolerance: 10,
+    /* Protocole pénétromètre : les deux joues de 5 fruits par palette. */
+    pressure: { fruits: 5, sides: 2, ref: 13, unit: 'kg' },
+    /* Poids minimum par calibre, en grammes : sert à signaler les
+       fruits sous-calibrés au contrôle production. Valeurs de départ
+       tirées de la norme CEE-ONU FFV-42 — à remplacer par le barème
+       de l'entreprise dans Réglages > Produits & critères. */
+    calibreWeights: { '4': 781, '6': 576, '8': 456, '10': 364, '12': 300, '14': 258,
+                      '16': 227, '18': 203, '20': 184, '22': 165, '24': 151,
+                      '26': 144, '28': 134, '30': 123, '32': 80 },
     sections: [
       PALETTISATION,
       EMBALLAGE,
@@ -131,13 +140,23 @@ const MANGUE = {
     calibres: ['A (200–350 g)', 'B (351–550 g)', 'C (551–800 g)', 'D (> 800 g)', '6', '7', '8', '9', '10', '12', '14'],
     categories: ['Extra', 'I', 'II'],
     tolerance: 10,
+    /* Mangue : même protocole, sur 3 fruits. */
+    pressure: { fruits: 3, sides: 2, ref: 13, unit: 'kg' },
+    /* Repères CEE-ONU FFV-45, en grammes. */
+    calibreWeights: { 'A (200–350 g)': 200, 'B (351–550 g)': 351,
+                      'C (551–800 g)': 551, 'D (> 800 g)': 800 },
     sections: [
       PALETTISATION,
       EMBALLAGE,
       TEMPERATURE(8, 12),
       TRACABILITE,
       ASPECT,
-      { id: 'transport', label: 'Transport', fields: [
+      /* Le mode de fret décrit la façon dont la marchandise est
+         arrivée : il n'a pas de sens sur un départ client ni sur une
+         chaîne de conditionnement. C'est le seul exemple de portée
+         livré d'office — le reste de la grille vaut pour les trois
+         types tant que vous n'en décidez pas autrement. */
+      { id: 'transport', label: 'Transport', types: ['reception'], fields: [
         { key: 'freight', label: 'Mode de fret', type: 'choice', severity: 'mineur',
           options: [ {v:'Aérien', s:'ok'}, {v:'Maritime', s:'ok'} ] }
       ]},
@@ -178,6 +197,7 @@ const GENERIQUE = {
     calibres: [],
     categories: ['Extra', 'I', 'II'],
     tolerance: 10,
+    pressure: { fruits: 5, sides: 2, ref: 13, unit: 'kg' },
     sections: [
       PALETTISATION,
       EMBALLAGE,
@@ -202,14 +222,10 @@ const GENERIQUE = {
 
 export const DEFAULT_GROUPS = [AVOCAT, MANGUE, GENERIQUE];
 
-/* Origines proposées par défaut (code ISO affiché tel quel dans le PDF). */
-export const ORIGINS = [
-  'IL','MA','ES','PE','CL','ZA','KE','CO','MX','BR','CI','ML','SN','EG','TR','FR','PT','IT','DO','CR','GT','VN','IN','PK','TH','AU','NL'
-];
 
 /* Départements / dépôts. */
 export const DEFAULT_SETTINGS = {
   company: 'SARL Mehadrin International',
-  departments: ['Rungis', 'Perpignan', 'Châteaurenard'],
+  departments: ['Châteaurenard', 'Rungis', 'Perpignan'],
   tolerance: 10
 };

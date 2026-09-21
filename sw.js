@@ -8,12 +8,12 @@
    Changer CACHE ci-dessous suffit à déployer une nouvelle version.
    ------------------------------------------------------------------ */
 
-const CACHE = 'mehadrin-qc-v2';
+const CACHE = 'mehadrin-qc-v9';
 
 const SHELL = [
   './', './index.html', './manifest.webmanifest', './logo.svg', './app.css',
   './app.js', './config.js', './supa.js', './store.js', './verdict.js',
-  './catalog.js', './ui.js', './pdf.js', './report-pdf.js', './logo.js',
+  './catalog.js', './countries.js', './pressure.js', './pressure-chart.js', './report-types.js', './ui.js', './pdf.js', './report-pdf.js', './logo.js',
   './xlsx.js', './form.js', './reports.js', './settings.js', './stats.js',
   './icon-192.png', './icon-512.png', './icon-maskable.png'
 ];

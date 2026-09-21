@@ -7,6 +7,11 @@ import { $, $$, esc, icon, toast, sheet, confirmSheet, stars, fmtDate, debounce,
 import { buildReportPDF, pdfFilename, LANGS } from './report-pdf.js';
 import { buildXlsx } from './xlsx.js';
 import { storage } from './supa.js';
+import { countryName, countryNames } from './countries.js';
+import { lotStats, weightLotStats, pressureConfig, fmtP, fmtG,
+         pressureVerdict, refSpec, refText, SEV_LABEL } from './pressure.js';
+import { pressureChartSVG, pressureTable, weightTable } from './pressure-chart.js';
+import { reportType, TYPE_LIST } from './report-types.js';
 
 const filters = { q: '', type: '', group: '', partner: '', verdict: '', from: '', to: '' };
 
@@ -31,8 +36,7 @@ export async function renderFeed({ refresh = true } = {}) {
     </div>
     <div class="chips" style="margin-bottom:12px">
       <button class="chip" data-f="type" data-v="" aria-pressed="${!filters.type}">Tous</button>
-      <button class="chip" data-f="type" data-v="reception" aria-pressed="${filters.type === 'reception'}">Réception</button>
-      <button class="chip" data-f="type" data-v="expedition" aria-pressed="${filters.type === 'expedition'}">Expédition</button>
+      ${TYPE_LIST.map(T => `<button class="chip" data-f="type" data-v="${T.id}" aria-pressed="${filters.type === T.id}">${esc(T.short)}</button>`).join('')}
       <button class="chip" data-f="verdict" data-v="Non Conforme" aria-pressed="${filters.verdict === 'Non Conforme'}">Non conformes</button>
       ${state.groups.map(g => `<button class="chip" data-f="group" data-v="${esc(g.id)}" aria-pressed="${filters.group === g.id}">${esc(g.config?.icon || '')} ${esc(g.name)}</button>`).join('')}
     </div>
@@ -49,11 +53,10 @@ export async function renderFeed({ refresh = true } = {}) {
         $('#filterBtn').onclick = openFilters;
         $('#xlsBtn').onclick = () => exportXlsx(rows);
         const nb = $('#newBtn');
-        if (nb) nb.onclick = () => sheet('Nouveau rapport', `
-          <button class="menu-item" data-t="reception"><span class="ic">${icon('down')}</span>
-            <span class="tx"><b>Réception</b><span>Contrôle à l'arrivée</span></span><span class="chev">›</span></button>
-          <button class="menu-item" data-t="expedition" style="margin-top:10px"><span class="ic g">${icon('share')}</span>
-            <span class="tx"><b>Expédition client</b><span>Contrôle avant départ</span></span><span class="chev">›</span></button>`,
+        if (nb) nb.onclick = () => sheet('Nouveau rapport', `<div class="list">${TYPE_LIST.map(T => `
+          <button class="menu-item" data-t="${T.id}"><span class="ic ${T.tone}">${icon(T.icon)}</span>
+            <span class="tx"><b>${esc(T.short)}</b><span>${esc(T.subtitle)}</span></span>
+            <span class="chev">›</span></button>`).join('')}</div>`,
           { onMount(el, close) {
               el.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { close(); go('#/report/new/' + b.dataset.t); });
             } });
@@ -76,8 +79,9 @@ function applyFilters(all) {
     if (filters.from && r.report_date < filters.from) return false;
     if (filters.to && r.report_date > filters.to + 'T23:59:59') return false;
     if (!q) return true;
-    return [r.partner_name, r.report_no, r.header?.lot, r.header?.order, r.header?.load_id,
-            r.header?.variety, r.header?.origin, r.remarks, groupById(r.product_group_id)?.name]
+    return [r.partner_name, r.report_no, r.header?.lot, r.header?.bl, r.header?.order, r.header?.load_id,
+            r.header?.variety, r.header?.origin, countryNames(originList(r.header), 'fr'),
+            r.remarks, groupById(r.product_group_id)?.name]
       .filter(Boolean).join(' ').toLowerCase().includes(q);
   });
 }
@@ -101,7 +105,7 @@ async function paintList(rows) {
       <div class="rep-meta">
         <span>${esc(r.partner_name || '')}</span>
         <span>${fmtDate(r.report_date)}</span>
-        <span>${r.type === 'reception' ? 'Réception' : 'Expédition'}</span>
+        <span>${esc(reportType(r.type).short)}</span>
         ${r.report_no ? `<span>n° ${esc(r.report_no)}</span>` : ''}
         ${r._dirty ? '<span style="color:var(--warn)">• à envoyer</span>' : ''}
       </div>
@@ -168,14 +172,14 @@ export async function renderReportView(id) {
   const g = groupById(r.product_group_id);
   const s = r.summary || {};
   const m = r.measures || {};
-  const isRec = r.type === 'reception';
+  const T = reportType(r.type);
   const mine = r.created_by === state.profile?.id;
   const canEdit = state.profile?.role === 'admin' || (state.profile?.role === 'inspecteur' && mine);
 
   /* La grille figée à l'enregistrement prime : un rapport de mars doit
      rester lisible même si les seuils ont bougé depuis. */
   const grid = r.criteria_snapshot ? { config: r.criteria_snapshot, name: g?.name } : g;
-  const fields = flatFields(grid || {});
+  const fields = flatFields(grid || {}, r.type);
   const bySection = new Map();
   for (const f of fields) {
     if (m[f.key] === '' || m[f.key] == null) continue;
@@ -183,7 +187,7 @@ export async function renderReportView(id) {
     bySection.get(f.sectionLabel).push(f);
   }
 
-  shell(isRec ? 'Rapport de réception' : "Rapport d'expédition", `
+  shell(T.title, `
     <div class="card pad">
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
         <span class="pill ${QUALITY_STATUS[s.quality]}">Qualité : ${esc(s.quality || '—')}</span>
@@ -199,13 +203,19 @@ export async function renderReportView(id) {
     <div class="card pad" style="margin-top:12px">
       ${kv('Date', fmtDate(r.report_date))}
       ${r.report_no ? kv('N° de rapport', r.report_no) : ''}
-      ${kv(isRec ? 'Fournisseur' : 'Client', r.partner_name)}
-      ${kv('Produit', [g?.name, r.header?.variety, r.header?.calibre].filter(Boolean).join(' '))}
-      ${r.header?.origin ? kv('Origine', r.header.origin) : ''}
+      ${kv(T.partnerLabel, r.partner_name)}
+      ${kv('Produit', [g?.name, r.header?.variety].filter(Boolean).join(' '))}
+      ${originList(r.header).length ? kv(originList(r.header).length > 1 ? 'Origines' : 'Origine',
+          countryNames(originList(r.header), 'fr')) : ''}
+      ${calibreRows(r)}
       ${r.header?.department ? kv('Département', r.header.department) : ''}
+      ${r.header?.carrier ? kv('Transporteur', r.header.carrier) : ''}
+      ${(reportType(r.type).voyage && (r.header?.voyage || r.header?.load_id))
+          ? kv('N° de Voyage', r.header.voyage || r.header.load_id) : ''}
       ${r.header?.order ? kv('Commande', r.header.order) : ''}
-      ${r.header?.load_id ? kv('Id de chargement', r.header.load_id) : ''}
-      ${r.header?.lot ? kv('Lot', r.header.lot) : ''}
+      ${r.header?.lot ? kv('N° de lot', r.header.lot) : ''}
+      ${r.header?.bl ? kv('N° de BL', r.header.bl) : ''}
+      ${r.header?.packaging_kind ? kv('Conditionnement', r.header.packaging_kind) : ''}
       ${r.header?.category ? kv('Catégorie', r.header.category) : ''}
       ${r.header?.bad_pallet ? kv('Palette problématique', r.header.bad_pallet) : ''}
       ${kv('Contrôlé par', r.inspector_name || '')}
@@ -219,6 +229,8 @@ export async function renderReportView(id) {
                     : `${fmtVal(m[f.key])}${f.unit && f.type !== 'choice' ? ' ' + f.unit : ''}`;
           return kv(f.label, val, st);
         }).join('')}</div></details>`).join('')}
+
+    ${pressureBlock(r, g)}
 
     ${r.remarks?.trim() ? `<div class="card pad" style="margin-top:12px">
       <div class="muted" style="margin-bottom:6px">Remarques</div>
@@ -260,6 +272,79 @@ export async function renderReportView(id) {
               };
             } });
       } });
+}
+
+/* Pressions : la courbe d'abord — elle se lit d'un coup d'œil — puis
+   le détail chiffré, qui sert de preuve. */
+function pressureBlock(r, group) {
+  const p = r.header?.pressures;
+  const st = lotStats(p);
+  const wst = weightLotStats(p, group);
+  if (!st && !wst) return '';
+  const cfg = { fruits: p.fruits || 5, sides: p.sides || 2 };
+  const pv = pressureVerdict(p, group);
+  const sp = pv?.spec || refSpec(p, group);
+  return `
+  ${st ? `<div class="card pad" style="margin-top:12px">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+      <b style="font-size:14.5px">Pression moyenne par palette</b>
+      <span class="muted">${fmtP(st.avg)} ${esc(p.unit || 'kg')} sur le lot ·
+        min ${fmtP(st.min)} · max ${fmtP(st.max)} ·
+        ${st.count} palette${st.count > 1 ? 's' : ''} · ${st.measures} relevés</span>
+    </div>
+    ${sp ? `<div class="muted" style="font-size:12.5px;margin-bottom:6px">
+      ${sp.mode === 'range' ? 'Plage acceptée' : 'Référence'} <b>${esc(refText(sp))}</b>${
+        p.refClient ? ` — ${esc(p.refClient)}${refScope(p) ? ` · ${esc(refScope(p))}` : ''}` :
+        p.refSource === 'manuel' ? ' — ajustée pour ce rapport' : ''}</div>` : ''}
+    ${pv && pv.worst !== 'ok' ? `<div class="err-box" style="margin:6px 0 8px">
+      <b>${nonOk(pv)} palette${nonOk(pv) > 1 ? 's' : ''} hors référence</b> — ${
+        ['critique', 'majeur', 'mineur'].filter(l => pv.count[l])
+          .map(l => `${pv.count[l]} ${SEV_LABEL[l].toLowerCase()}`).join(', ')}.</div>` : ''}
+    ${pressureChartSVG(p, { spec: sp, unit: p.unit })}
+    ${pressureTable(p, cfg, sp)}
+  </div>` : ''}
+  ${wst ? `<div class="card pad" style="margin-top:12px">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:4px">
+      <b style="font-size:14.5px">Poids par fruit</b>
+      <span class="muted">moyenne ${fmtG(wst.avg)} g · min ${fmtG(wst.min)} · max ${fmtG(wst.max)} ·
+        ${wst.measures} pesée${wst.measures > 1 ? 's' : ''}</span>
+    </div>
+    ${wst.under
+      ? `<div class="err-box" style="margin:6px 0 4px"><b>${wst.under} fruit${wst.under > 1 ? 's' : ''} sous-calibré${wst.under > 1 ? 's' : ''}</b>
+           sur ${wst.measures} pesée${wst.measures > 1 ? 's' : ''} — repérés en rouge ci-dessous.</div>`
+      : `<div class="ok-box" style="margin:6px 0 4px">Aucun fruit sous le poids minimum de son calibre.</div>`}
+    ${weightTable(p, cfg, group)}
+  </div>` : ''}`;
+}
+
+const nonOk = (pv) => pv.count.mineur + pv.count.majeur + pv.count.critique;
+
+/* Portée de la règle client appliquée. Les rapports d'avant la
+   distinction par produit ne portaient que le conditionnement. */
+const refScope = (p) => p?.refScope || p?.refPack || '';
+
+/* Origines du rapport, quelle que soit la version qui l'a écrit. */
+function originList(h) {
+  if (Array.isArray(h?.origins) && h.origins.length) return h.origins;
+  if (Array.isArray(h?.calibres)) {
+    const set = [...new Set(h.calibres.map(c => (c.o || '').toUpperCase()).filter(Boolean))];
+    if (set.length) return set;
+  }
+  return h?.origin ? String(h.origin).split(/[,;]\s*/).filter(Boolean) : [];
+}
+
+/* Détail ligne par ligne quand le lot en compte plusieurs ou qu'un
+   décompte a été saisi ; sinon un simple « Calibre ». */
+function calibreRows(r) {
+  const cals = r.header?.calibres;
+  if (!Array.isArray(cals) || !cals.length)
+    return r.header?.calibre ? kv('Calibre', r.header.calibre) : '';
+  if (cals.length === 1 && !cals[0].pal && !cals[0].col)
+    return cals[0].c ? kv('Calibre', cals[0].c) : '';
+  return cals.map(c => kv(
+    ['Calibre ' + (c.c || '—'), c.o ? '· ' + countryName(c.o, 'fr') : ''].filter(Boolean).join(' '),
+    [c.pal ? `${c.pal} palette${c.pal > 1 ? 's' : ''}` : '', c.col ? `${c.col} colis` : '']
+      .filter(Boolean).join(' · ') || '—')).join('');
 }
 
 const kv = (k, v, status) => `<div class="kv"><span class="k">${esc(k)}</span>
@@ -308,7 +393,7 @@ async function pdfFlow(r, g, action) {
             const name = pdfFilename(r, g);
             if (action === 'share') {
               const res = await shareFile(blob, name,
-                `${state.settings.company} — ${r.type === 'reception' ? 'rapport de réception' : "rapport d'expédition"} ${r.header?.lot || r.report_no || ''}`);
+                `${state.settings.company} — ${reportType(r.type).title.toLowerCase()} ${r.header?.lot || r.header?.bl || r.report_no || ''}`);
               if (res === 'downloaded') toast('PDF téléchargé');
             } else { download(blob, name); toast('PDF téléchargé'); }
           } catch (e) { toast('PDF : ' + e.message, 'err'); }
@@ -320,16 +405,19 @@ async function pdfFlow(r, g, action) {
 export function exportXlsx(rows) {
   if (!rows.length) return toast('Rien à exporter', 'err');
 
-  const head = ['N°','Date','Type','Groupe','Variété','Calibre','Origine','Partenaire','Département',
-                'Commande','Id chargement','Lot','Catégorie','Qualité','Conservabilité','Évaluation',
-                '%NC','Étoiles','Palettes','Colis','Poids net','Température','Contrôleur','Remarques','Photos'];
+  const head = ['N°','Date','Type','Groupe','Variété','Calibre','Origine(s)','Partenaire','Département',
+                'Commande','Id chargement','N° de lot','N° de BL','Catégorie','Conditionnement','Détail calibres','Qualité','Conservabilité','Évaluation',
+                '%NC','Étoiles','Palettes','Colis','Poids net','Température','Contrôleur','Remarques','Photos','Transporteur','N° de Voyage','Pression moy.','Pression min','Pression max','Palettes mesurées',
+                'Référence pression','Palettes hors référence','Écart le plus grave'];
   const main = rows.map(r => {
     const g = groupById(r.product_group_id), s = r.summary || {}, m = r.measures || {}, h = r.header || {};
-    return [r.report_no || '', fmtDate(r.report_date), r.type === 'reception' ? 'Réception' : 'Expédition',
-      g?.name || '', h.variety || '', h.calibre || '', h.origin || '', r.partner_name || '', h.department || '',
-      h.order || '', h.load_id || '', h.lot || '', h.category || '', s.quality || '', s.shelf || '', s.verdict || '',
+    return [r.report_no || '', fmtDate(r.report_date), reportType(r.type).short,
+      g?.name || '', h.variety || '', h.calibre || '', countryNames(originList(h), 'fr'), r.partner_name || '', h.department || '',
+      h.order || '', h.load_id || '', h.lot || '', h.bl || '', h.category || '', h.packaging_kind || '', calibreDetail(h), s.quality || '', s.shelf || '', s.verdict || '',
       s.nc ?? '', s.stars ?? '', num(m.pal_count), num(m.col_count), num(m.pkg_net), num(m.temp_pulp),
-      r.inspector_name || '', (r.remarks || '').replace(/\n/g, ' '), r.photos?.length || 0];
+      r.inspector_name || '', (r.remarks || '').replace(/\n/g, ' '), r.photos?.length || 0,
+      h.carrier || '', h.voyage || h.load_id || '',
+      ...pressureCells(h, g)];
   });
 
   /* Deuxième feuille : une ligne par mesure, pour croiser les données
@@ -356,3 +444,26 @@ export function exportXlsx(rows) {
   toast(`${rows.length} rapport${rows.length > 1 ? 's exportés' : ' exporté'}`);
 }
 const num = (v) => (v === '' || v == null) ? '' : Number(v);
+
+/* On exporte aussi le verdict de pression : c'est sur cette colonne
+   qu'on filtrera les lots à réclamer, pas sur la moyenne brute. */
+const pressureCells = (h, group) => {
+  const st = lotStats(h?.pressures);
+  if (!st) return ['', '', '', '', '', '', ''];
+  const pv = pressureVerdict(h?.pressures, group);
+  return [round1(st.avg), round1(st.min), round1(st.max), st.count,
+    pv ? refText(pv.spec) : '',
+    pv ? pv.count.mineur + pv.count.majeur + pv.count.critique : '',
+    pv ? (pv.worst === 'ok' ? 'Conforme' : SEV_LABEL[pv.worst]) : ''];
+};
+const round1 = (v) => Math.round(v * 10) / 10;
+
+/* « 16: 8 pal/2080 col; 18: 12 pal/3120 col » — lisible tel quel dans
+   une cellule, et exploitable dans un tableau croisé via la feuille
+   Mesures si besoin de plus de finesse. */
+const calibreDetail = (h) => Array.isArray(h?.calibres)
+  ? h.calibres.map(c => [
+      [c.c, c.o ? countryName(c.o, 'fr') : ''].filter(Boolean).join(' / '),
+      [c.pal ? c.pal + ' pal' : '', c.col ? c.col + ' col' : ''].filter(Boolean).join('/')
+    ].filter(Boolean).join(': ')).join(' ; ')
+  : (h?.calibre || '');

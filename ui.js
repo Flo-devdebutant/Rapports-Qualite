@@ -17,14 +17,25 @@ export const ICONS = {
   pdf:    '<path d="M14 3H7v18h11V7z"/><path d="M14 3v4h4"/><path d="M9 14h1.6a1.4 1.4 0 000-2.8H9V17"/>',
   excel:  '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M9 9v11M15 9v11"/>',
   trash:  '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/>',
+  /* Réglages : chaque entrée doit se reconnaître d'un coup d'œil,
+     d'où des objets concrets (presse-papier, camion, badge) plutôt
+     que des symboles abstraits. */
+  clipboard: '<path d="M9 4h6v3H9z"/><path d="M9 5.5H6.5v15h11v-15H15"/><path d="M9 12.5l1.7 1.7L14.5 10"/>',
+  truck:  '<path d="M3 7h10v9H3z"/><path d="M13 10.5h4l3 3V16h-7"/><circle cx="7" cy="18" r="1.9"/><circle cx="17" cy="18" r="1.9"/>',
+  badge:  '<circle cx="12" cy="9.2" r="3.1"/><path d="M5.5 19.5c.6-3.4 3.3-5.3 6.5-5.3s5.9 1.9 6.5 5.3"/>',
+  theme:  '<circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 010 16z" fill="currentColor" stroke="none"/>',
+  sun:    '<circle cx="12" cy="12" r="4"/><path d="M12 2.8v2M12 19.2v2M21.2 12h-2M4.8 12h-2M18.5 5.5l-1.4 1.4M6.9 17.1l-1.4 1.4M18.5 18.5l-1.4-1.4M6.9 6.9L5.5 5.5"/>',
+  moon:   '<path d="M20 14.4A8.4 8.4 0 019.6 4 8.4 8.4 0 1020 14.4z"/>',
   edit:   '<path d="M4 20h4L19 9a2.1 2.1 0 10-3-3L5 17z"/>',
   copy:   '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5h10"/>',
-  gear:   '<circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.4M12 18.6V21M21 12h-2.4M5.4 12H3M18.4 5.6l-1.7 1.7M7.3 16.7l-1.7 1.7M18.4 18.4l-1.7-1.7M7.3 7.3L5.6 5.6"/>',
+  /* Des curseurs de réglage plutôt qu'un engrenage : à 21 px, une roue
+     dentée se réduit à un disque flou, les curseurs restent lisibles. */
+  gear:   '<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.1"/><circle cx="10" cy="17" r="2.1"/>',
   chart:  '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
-  feed:   '<path d="M4 6h16M4 12h16M4 18h10"/>',
+  feed:   '<path d="M9 6h11M9 12h11M9 18h7"/><path d="M4.4 6h.01M4.4 12h.01M4.4 18h.01" stroke-width="2.6"/>',
   box:    '<path d="M3 8l9-4 9 4v8l-9 4-9-4z"/><path d="M3 8l9 4 9-4M12 12v8"/>',
   users:  '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M16 5.2A3.2 3.2 0 0119 8a3.2 3.2 0 01-3 3.2M17 14.8c2.4.4 4 2.3 4 5.2"/>',
-  logout: '<path d="M14 7V4H4v16h10v-3"/><path d="M10 12h10M17 9l3 3-3 3"/>',
+  logout: '<path d="M13 4H5.5v16H13"/><path d="M11 12h9M17.2 8.8L20.4 12l-3.2 3.2"/>',
   check:  '<path d="M4 12.5l5 5L20 6.5"/>',
   x:      '<path d="M6 6l12 12M18 6L6 18"/>',
   sync:   '<path d="M3.5 12a8.5 8.5 0 0114.6-5.9M20.5 12a8.5 8.5 0 01-14.6 5.9"/><path d="M18 3v4h-4M6 21v-4h4"/>',
@@ -95,6 +106,28 @@ export async function compressImage(file, maxSide = 1400, quality = 0.72) {
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close?.();
   return await new Promise(res => canvas.toBlob(b => res(b || file), 'image/jpeg', quality));
+}
+
+/* ---------------------------- thème ---------------------------- */
+/* 'auto' | 'light' | 'dark'. Stocké par appareil : un inspecteur peut
+   préférer le mode sombre en chambre froide sans l'imposer au bureau. */
+export function getTheme() {
+  try { return localStorage.getItem('qc.theme') || 'auto'; } catch { return 'auto'; }
+}
+export function setTheme(mode) {
+  try {
+    if (mode === 'auto') { localStorage.removeItem('qc.theme'); delete document.documentElement.dataset.theme; }
+    else { localStorage.setItem('qc.theme', mode); document.documentElement.dataset.theme = mode; }
+  } catch {}
+  /* La barre d'adresse du téléphone suit la couleur déclarée : sans
+     cette mise à jour elle resterait claire au-dessus d'un fond sombre. */
+  const dark = mode === 'dark' ||
+    (mode === 'auto' && matchMedia('(prefers-color-scheme:dark)').matches);
+  document.querySelectorAll('meta[name="theme-color"]').forEach(m => m.remove());
+  const meta = document.createElement('meta');
+  meta.name = 'theme-color';
+  meta.content = dark ? '#191b1f' : '#ff8725';
+  document.head.appendChild(meta);
 }
 
 /* --------------------------- divers --------------------------- */

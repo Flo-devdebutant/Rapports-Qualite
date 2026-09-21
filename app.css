@@ -9,15 +9,33 @@
   --ink:#0c0c0c; --ink-2:#3b3b3b; --ink-3:#6b6b6b;
   --bg:#f4f5f7; --card:#fff; --line:#e3e5e9; --line-2:#eef0f3;
   --ok:#16a34a; --warn:#f59e0b; --fail:#dc2626; --info:#3b82f6;
+  /* Gravité des écarts de pression. Deux jeux : la couleur d'état de
+     la charte pour les marques du graphique, et une encre d'un cran
+     plus foncée pour le texte — mesurée à 4,5:1 au moins sur chaque
+     fond, ce que le jaune d'état ne tient pas (1,8:1 sur blanc). */
+  --sev-ok:#0a8a0a; --sev-mineur:#9a6300; --sev-majeur:#a84a22; --sev-critique:#d03b3b;
   --r:14px; --r-sm:10px;
   --shadow:0 1px 2px rgba(12,12,12,.05),0 4px 14px rgba(12,12,12,.06);
   --safe-b:env(safe-area-inset-bottom,0px);
   --head-h:56px;
 }
+/* Thème : « auto » suit le réglage du téléphone, et l'attribut
+   data-theme posé sur <html> depuis les Réglages force l'un ou
+   l'autre. D'où la double déclaration — la règle média ne doit pas
+   s'appliquer quand l'utilisateur a explicitement choisi le clair. */
 @media (prefers-color-scheme:dark){
-  :root{ --bg:#101114; --card:#191b1f; --line:#2a2d33; --line-2:#232529;
-         --ink:#f2f3f5; --ink-2:#c7cad0; --ink-3:#9298a1;
-         --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.35); }
+  :root:not([data-theme="light"]){
+  --bg:#101114; --card:#191b1f; --line:#2a2d33; --line-2:#232529;
+  --ink:#f2f3f5; --ink-2:#c7cad0; --ink-3:#9298a1;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.35);
+  --sev-ok:#0ca30c; --sev-mineur:#fab219; --sev-majeur:#ec835a; --sev-critique:#e05656;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#101114; --card:#191b1f; --line:#2a2d33; --line-2:#232529;
+  --ink:#f2f3f5; --ink-2:#c7cad0; --ink-3:#9298a1;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 4px 16px rgba(0,0,0,.35);
+  --sev-ok:#0ca30c; --sev-mineur:#fab219; --sev-majeur:#ec835a; --sev-critique:#e05656;
 }
 
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -44,7 +62,17 @@ h1,h2,h3{margin:0;font-weight:700;letter-spacing:-.01em}
   background:transparent;cursor:pointer;color:var(--ink-2)
 }
 .icon-btn:active{background:var(--line-2)}
-.icon-btn svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+
+/* Les icônes sont des tracés ouverts : sans cette règle, le navigateur
+   les remplit en noir par défaut au lieu de les dessiner au trait —
+   un engrenage devient un point, une liste devient invisible.
+   La règle est globale pour couvrir tous les contextes (menus, boutons,
+   puces) et pas seulement la barre du haut. */
+svg{fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}
+.icon-btn svg{width:22px;height:22px}
+.menu-item .ic svg{width:21px;height:21px}
+.btn svg{width:17px;height:17px;flex:0 0 17px}
+.crit svg,.chip svg{width:18px;height:18px}
 main{flex:1;padding:14px 12px calc(28px + var(--safe-b));max-width:760px;width:100%;margin:0 auto}
 
 /* ------------------------------ cartes ------------------------------ */
@@ -87,6 +115,25 @@ textarea{min-height:92px;resize:vertical;line-height:1.45}
 select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b6b6b' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");
   background-repeat:no-repeat;background-position:right 10px center;background-size:18px;padding-right:34px}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+/* Une ligne du détail du lot : origine + calibre sur la première
+   rangée, palettes + colis sur la seconde, le retrait au bout. Deux
+   rangées plutôt que quatre colonnes : sur un écran de téléphone,
+   « République dominicaine » ne tient pas dans un quart de largeur. */
+.cal-row{
+  display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) 34px;gap:7px 6px;
+  padding:10px 0;border-top:1px solid var(--line-2)
+}
+.cal-row:first-child{border-top:0;padding-top:2px}
+.lot-f{display:block;min-width:0}
+.lot-f label{display:block;font-size:10.5px;font-weight:600;color:var(--ink-3);margin-bottom:3px;letter-spacing:.01em}
+.cal-row input,.cal-row select{padding:9px 10px;font-size:15px}
+.cal-row select{padding-right:30px}
+.cal-row input[type=number]{text-align:right}
+.cal-row .icon-btn{width:34px;height:34px;border-radius:9px;color:var(--ink-3);align-self:end;margin-bottom:2px}
+.cal-row .icon-btn svg{width:17px;height:17px}
+.cal-row input[type=number]::-webkit-outer-spin-button,
+.cal-row input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 .row3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 
 .btn{
@@ -114,9 +161,25 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .pill.ok{background:rgba(22,163,74,.13);color:#15803d}
 .pill.warn{background:rgba(245,158,11,.15);color:#b45309}
 .pill.fail{background:rgba(220,38,38,.12);color:#b91c1c}
-@media (prefers-color-scheme:dark){
-  .pill.ok{color:#4ade80}.pill.warn{color:#fbbf24}.pill.fail{color:#f87171}
+.pill.sm{padding:2px 8px;font-size:10.5px;font-weight:600}
+
+/* Portée d'une section ou d'un critère : à quels types de rapport il
+   s'applique. Trois boutons plutôt que trois cases à cocher — la
+   cible tactile reste confortable sur un téléphone. */
+.tgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+.tbtn{
+  min-height:42px;padding:0 8px;border:1px solid var(--line);border-radius:var(--r-sm);
+  background:var(--card);color:var(--ink-2);font-size:13px;font-weight:600;cursor:pointer
 }
+.tbtn[aria-pressed=true]{background:var(--orange);border-color:var(--orange);color:#fff}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .pill.ok{color:#4ade80}
+  :root:not([data-theme="light"]) .pill.warn{color:#fbbf24}
+  :root:not([data-theme="light"]) .pill.fail{color:#f87171}
+}
+:root[data-theme="dark"] .pill.ok{color:#4ade80}
+:root[data-theme="dark"] .pill.warn{color:#fbbf24}
+:root[data-theme="dark"] .pill.fail{color:#f87171}
 .stars{color:var(--orange);letter-spacing:1px;font-size:13px}
 .stars .off{color:var(--line)}
 
@@ -233,7 +296,12 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 
 .auth-wrap{max-width:400px;margin:0 auto;padding-top:6vh}
 .auth-logo{display:block;width:min(240px,72vw);margin:0 auto 24px}
-@media (prefers-color-scheme:dark){ .auth-logo,.topbar .logo{filter:invert(1) hue-rotate(180deg)} }
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .auth-logo,
+  :root:not([data-theme="light"]) .topbar .logo{filter:invert(1) hue-rotate(180deg)}
+}
+:root[data-theme="dark"] .auth-logo,
+:root[data-theme="dark"] .topbar .logo{filter:invert(1) hue-rotate(180deg)}
 
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
 .stat{padding:14px;border:1px solid var(--line);border-radius:var(--r);background:var(--card);box-shadow:var(--shadow)}
@@ -246,16 +314,215 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .bars .b .tr i{display:block;height:100%;border-radius:5px;background:var(--orange)}
 .bars .b .vl{flex:0 0 52px;text-align:right;color:var(--ink-3);font-variant-numeric:tabular-nums}
 
+/* ------------------------ graphique de pression ------------------------
+   Couleurs validées par l'outil de contrôle de la charte data-viz :
+   une seule série, orange de marque assombri pour tenir le contraste
+   3:1 sur fond clair, et son pas sombre sur fond foncé. Grille et axes
+   volontairement effacés — ils situent, ils ne racontent rien. */
+.pc{--pc-series:#eb6834;--pc-grid:var(--line-2);--pc-ink:var(--ink-3)}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .pc{--pc-series:#d95926}
+}
+:root[data-theme="dark"] .pc{--pc-series:#d95926}
+
+/* La taille du graphique vient d'ici, pas des attributs : « auto » sur
+   un attribut SVG n'est pas une longueur valide et le navigateur la
+   rejette. */
+.pc > svg{display:block;width:100%;height:auto}
+.pc-grid{stroke:var(--pc-grid);stroke-width:1}
+.pc-axis{stroke:var(--line);stroke-width:1}
+.pc-ref{stroke:var(--ink-3);stroke-width:1.4;stroke-dasharray:5 4;opacity:.75}
+.pc-line{fill:none;stroke:var(--pc-series);stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.pc-dot{fill:var(--pc-series);stroke:var(--card);stroke-width:1.8}
+.pc-val{fill:var(--ink);font-size:11px;font-weight:700;stroke:none}
+.pc-tick{fill:var(--pc-ink);font-size:10.5px;stroke:none}
+
+/* Zone acceptée peinte derrière la courbe : c'est la position du point
+   qui doit dire l'écart en premier, avant la forme et avant la
+   couleur. Assez pâle pour ne pas concurrencer la série. */
+.pc-zone{fill:#0ca30c;opacity:.09;stroke:none}
+.pc-zone.tol{opacity:.045}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .pc-zone{opacity:.16}
+  :root:not([data-theme="light"]) .pc-zone.tol{opacity:.08}
+}
+:root[data-theme="dark"] .pc-zone{opacity:.16}
+:root[data-theme="dark"] .pc-zone.tol{opacity:.08}
+
+.pc-cap{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:11.5px;color:var(--ink-3)}
+.pc-cap span{display:inline-flex;align-items:center;gap:6px}
+.pc-cap i{display:inline-block;width:14px;height:3px;border-radius:2px;flex:0 0 14px}
+.pc-cap i.pc-k-line{background:var(--pc-series)}
+.pc-cap i.pc-k-ref{background:repeating-linear-gradient(90deg,var(--ink-3) 0 4px,transparent 4px 7px)}
+/* Vignette de forme. Le liseré gris garde la forme nette même quand
+   la couleur d'état est pâle : c'est la forme qui doit se lire, la
+   couleur ne fait que confirmer. */
+.pc-cap i.pc-k-mark,.pc-k-mark{background:none;width:13px;height:13px;flex:0 0 13px;line-height:0}
+.pc-k-mark svg{stroke:var(--ink-3);stroke-width:1}
+
+.pc-tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-top:10px}
+.pc-table{border-collapse:collapse;font-size:12px;min-width:100%}
+.pc-table th,.pc-table td{border:1px solid var(--line-2);padding:5px 7px;text-align:right;white-space:nowrap}
+.pc-table thead th{background:var(--line-2);font-size:11px;color:var(--ink-2);font-weight:650}
+.pc-table tbody th{text-align:left;font-weight:650}
+.pc-table .pc-avg{font-weight:700;background:var(--line-2)}
+.pc-table .pc-under{color:var(--fail);font-weight:700}
+/* L'état est écrit en toutes lettres à côté de sa forme : la couleur
+   ne porte jamais seule la gravité. */
+.pc-table .pc-state{text-align:left;white-space:nowrap}
+.pc-table .pc-state i{display:inline-block;vertical-align:-2px;margin-right:5px;line-height:0}
+
+/* --------------------------- saisie pressions --------------------------- */
+/* Réglage de la référence, en tête de section : c'est lui qui donne
+   son sens à tout ce qui suit, il ne se cherche pas au fond d'un
+   menu. */
+.ref-box{border:1px solid var(--line);border-radius:var(--r-sm);padding:11px 12px;background:var(--bg)}
+.ref-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:9px}
+.ref-head .lb{font-size:13px;font-weight:650;flex:1;min-width:130px}
+.seg.sm{width:auto;flex:0 0 auto}
+.seg.sm button{min-height:32px;padding:0 13px;font-size:12.5px;flex:0 0 auto}
+.ref-in{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap}
+.ref-in label{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--ink-2)}
+.ref-in input{width:86px;min-height:38px;padding:0 9px;text-align:center;font-weight:650;
+  border:1px solid var(--line);border-radius:var(--r-sm);background:var(--card);color:var(--ink);font-size:15px}
+.ref-in .u{font-size:12.5px;color:var(--ink-3);padding-bottom:10px}
+.ref-box .hint{margin:8px 0 0}
+.linkish{background:none;border:0;padding:0;font:inherit;color:var(--orange-d);
+  font-weight:650;cursor:pointer;text-decoration:underline}
+
+/* Une ligne du cahier des charges client, dans les réglages : produit,
+   conditionnement, puis la valeur ou la plage. Sur téléphone les deux
+   listes prennent chacune la moitié de la largeur. */
+.ref-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:9px;margin-bottom:8px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--card)}
+.ref-row select{flex:1 1 calc(50% - 4px);min-height:38px;min-width:0;font-size:14px;padding:8px 28px 8px 9px}
+.ref-row .ref-in{flex:1 1 auto}
+.ref-row .ref-in input{width:76px;min-height:36px}
+.ref-row .icon-btn{margin-left:auto}
+
+.pal{border:1px solid var(--line);border-radius:var(--r-sm);padding:10px;margin-bottom:9px;background:var(--card)}
+/* Nom, calibre et retrait sur une ligne ; le résumé passe dessous
+   quand la largeur manque — sans quoi le bouton de retrait sortait
+   de la carte sur un écran de téléphone. */
+.pal-top{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.pal-top .nm{flex:0 0 74px}
+.pal-top .nm input{padding:7px 9px;font-size:14px}
+.pal-top .cal{flex:0 0 104px}
+.pal-top .cal select{padding:7px 26px 7px 9px;font-size:13.5px;background-position:right 6px center}
+.pal-top .icon-btn{margin-left:auto;order:2}
+.pal-top .avg{flex:1 1 100%;order:3;font-size:12.5px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+@media (min-width:620px){
+  .pal-top .avg{flex:1 1 auto;order:0;min-width:150px}
+  .pal-top .icon-btn{order:0;margin-left:0}
+}
+.pal-top .avg b{color:var(--ink);font-size:14px}
+.pal-cap{font-size:11px;font-weight:650;color:var(--ink-2);margin:2px 0 5px}
+.pal-cap .mini{font-weight:500;color:var(--ink-3)}
+.pal-grid + .pal-cap{margin-top:10px}
+.pal-grid{display:grid;gap:5px}
+.pal-grid .fh{font-size:10px;color:var(--ink-3);text-align:center;font-weight:600}
+.pal-grid input{padding:7px 4px;font-size:15px;text-align:center}
+.pal-grid input::-webkit-outer-spin-button,
+.pal-grid input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+.pal-grid input.off{color:var(--fail);font-weight:650}
+
+/* Barème des poids minimums : une grille dense, le calibre à gauche
+   de sa valeur — on la parcourt en diagonale pour repérer un trou. */
+.wgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px 14px}
+.wrow{display:flex;align-items:center;gap:8px}
+.wrow label{flex:1;min-width:0;font-size:13px;color:var(--ink-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wrow span{position:relative;flex:0 0 84px}
+.wrow input{padding:8px 24px 8px 9px;font-size:15px;text-align:right}
+.wrow i{position:absolute;right:9px;top:50%;transform:translateY(-50%);font-style:normal;font-size:12px;color:var(--ink-3);pointer-events:none}
+.wrow input::-webkit-outer-spin-button,.wrow input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+
 hr.sep{border:0;border-top:1px solid var(--line);margin:16px 0}
 .muted{color:var(--ink-3);font-size:12.5px;line-height:1.5}
 .err-box{background:rgba(220,38,38,.1);color:#b91c1c;border-radius:10px;padding:11px 13px;font-size:13px;margin-bottom:12px}
 .ok-box{background:rgba(22,163,74,.1);color:#15803d;border-radius:10px;padding:11px 13px;font-size:13px;margin-bottom:12px}
-@media (prefers-color-scheme:dark){.err-box{color:#f87171}.ok-box{color:#4ade80}}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]) .err-box{color:#f87171}
+  :root:not([data-theme="light"]) .ok-box{color:#4ade80}
+}
+:root[data-theme="dark"] .err-box{color:#f87171}
+:root[data-theme="dark"] .ok-box{color:#4ade80}
 
 .spin{width:18px;height:18px;border:2.2px solid rgba(255,255,255,.35);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite}
 @keyframes sp{to{transform:rotate(360deg)}}
 .center{display:grid;place-items:center;min-height:60dvh;gap:12px;color:var(--ink-3)}
 .spin.dark{border-color:var(--line);border-top-color:var(--orange)}
 
-@media(min-width:620px){ .crit .in{width:150px;flex:0 0 150px} .photo-grid{grid-template-columns:repeat(4,1fr)} }
+/* ======================= adaptation aux écrans =======================
+   L'application est d'abord pensée pour un téléphone tenu d'une main.
+   Sur tablette et ordinateur, le même contenu s'étale au lieu de rester
+   une colonne étroite au milieu du vide : menus et listes passent en
+   grille, le formulaire gagne une colonne latérale pour le verdict, et
+   les critères se lisent deux par rangée.                             */
+
+@media (min-width:620px){
+  .crit .in{width:150px;flex:0 0 150px}
+  .photo-grid{grid-template-columns:repeat(4,1fr)}
+  main{padding:18px 18px calc(32px + var(--safe-b))}
+  /* La feuille du bas devient une boîte de dialogue centrée. */
+  .sheet{
+    left:50%;right:auto;bottom:auto;top:50%;width:min(560px,92vw);
+    border-radius:18px;max-height:86dvh;padding:8px 20px 22px;
+    transform:translate(-50%,-44%)
+  }
+  .sheet.on{transform:translate(-50%,-50%)}
+  .sheet .grip{display:none}
+  .sheet h3{margin-top:10px}
+}
+
+@media (min-width:1024px){
+  main{max-width:1140px;padding:24px 28px calc(40px + var(--safe-b))}
+  .topbar{padding:0 20px}
+  .topbar h1{font-size:19px}
+
+  /* Menus d'accueil et de réglages : deux tuiles par rangée. */
+  .menu{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+  .sheet .menu{grid-template-columns:1fr}
+
+  /* Flux, carnet, groupes : autant de cartes que la largeur permet. */
+  .list{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;align-items:start}
+  .sheet .list{grid-template-columns:1fr}
+
+  /* Formulaire : saisie à gauche, verdict à droite. */
+  .form-wrap{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+  .form-main{grid-column:1;grid-row:1;min-width:0}
+  .form-side{grid-column:2;grid-row:1}
+  .form-side .card.stick{top:calc(var(--head-h) + 24px);margin-bottom:0}
+
+  /* Deux champs, ou deux critères, par rangée. */
+  .sec > .body.grid2{display:grid;grid-template-columns:1fr 1fr;column-gap:24px;align-items:start}
+  .sec > .body.grid2 > .row2,
+  .sec > .body.grid2 > .span2{grid-column:1 / -1}
+  .sec > .body.crits{display:grid;grid-template-columns:1fr 1fr;column-gap:28px;align-items:start}
+  .sec > .body.crits > .crit:nth-child(-n+2){border-top:0}
+
+  .photo-grid{grid-template-columns:repeat(6,1fr)}
+  .stat-grid{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+  .pal-grid input{padding:8px 6px}
+
+  /* La barre d'actions reste alignée sur la colonne de contenu. */
+  .sticky-actions{
+    margin:18px -28px calc(-40px - var(--safe-b));
+    padding:12px 28px calc(12px + var(--safe-b));
+    justify-content:flex-end
+  }
+  .sticky-actions .btn{flex:0 0 auto;min-width:160px}
+}
+
+@media (min-width:1400px){
+  main{max-width:1280px}
+  .form-wrap{grid-template-columns:minmax(0,1fr) 330px}
+}
+
+/* Sur grand écran, la souris est là : le survol peut servir. */
+@media (hover:hover) and (min-width:1024px){
+  .menu-item:hover,.rep:hover{border-color:var(--ink-3)}
+  .icon-btn:hover{background:var(--line-2)}
+  .btn.ghost:hover{background:var(--line-2)}
+}
+
 @media print{ .topbar,.sticky-actions,.icon-btn{display:none!important} body{background:#fff} }

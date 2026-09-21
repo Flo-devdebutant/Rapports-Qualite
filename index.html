@@ -13,6 +13,15 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Mehadrin QC">
 <link rel="stylesheet" href="./app.css">
+<script>
+/* Appliqué avant le rendu : si le choix de thème était lu par app.js,
+   l'écran s'afficherait une fraction de seconde dans la mauvaise
+   couleur à chaque ouverture. */
+try {
+  var t = localStorage.getItem('qc.theme');
+  if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t;
+} catch (e) {}
+</script>
 </head>
 <body>
 <div id="app" class="app">

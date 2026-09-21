@@ -9,6 +9,9 @@
    invendable dans trois jours : un score unique masquerait ce risque.
    ------------------------------------------------------------------ */
 
+import { pressureVerdict } from './pressure.js';
+import { appliesTo } from './report-types.js';
+
 /* Statut d'un champ isolé : 'ok' | 'warn' | 'fail' | null (non renseigné) */
 export function fieldStatus(field, raw) {
   if (raw === '' || raw === null || raw === undefined) return null;
@@ -40,16 +43,25 @@ export function fieldStatus(field, raw) {
   return null;
 }
 
-/* Champs notés d'un groupe, aplatis avec leur section. */
-export function flatFields(group) {
+/* Champs notés d'un groupe, aplatis avec leur section.
+   Le type de rapport filtre ce qui s'applique : la matière sèche se
+   contrôle à l'arrivée, pas sur une chaîne de conditionnement. Sans
+   type, rien n'est filtré — c'est ce qu'il faut pour relire un
+   ancien rapport ou exporter la grille entière. */
+export function flatFields(group, type) {
   const out = [];
-  for (const s of group?.config?.sections || [])
-    for (const f of s.fields || []) out.push({ ...f, section: s.id, sectionLabel: s.label });
+  for (const s of group?.config?.sections || []) {
+    if (!appliesTo(s, type)) continue;
+    for (const f of s.fields || []) {
+      if (!appliesTo(f, type)) continue;
+      out.push({ ...f, section: s.id, sectionLabel: s.label, sectionI18n: s.i18n });
+    }
+  }
   return out;
 }
 
-export function computeSummary(group, measures) {
-  const fields = flatFields(group);
+export function computeSummary(group, measures, pressures, type) {
+  const fields = flatFields(group, type);
   const tolerance = Number(group?.config?.tolerance ?? 10);
 
   let fails = 0, warns = 0, oks = 0, critical = 0;
@@ -62,6 +74,25 @@ export function computeSummary(group, measures) {
     if (st === 'warn') warns++;
     if (st === 'fail') { fails++; if (f.severity === 'critique') critical++; }
     flagged.push({ key: f.key, label: f.label, status: st, value: measures[f.key], unit: f.unit });
+  }
+
+  /* Les pressions pèsent sur le verdict au même titre qu'un critère
+     noté : une palette dont la moyenne s'écarte de la référence est un
+     défaut mesuré, pas une annexe. Seules les moyennes par palette
+     sont jugées — un fruit isolé ne fait pas une non-conformité. */
+  const pv = pressureVerdict(pressures, group);
+  if (pv) {
+    for (const row of pv.rows) {
+      const lvl = row.sev.level;
+      if (lvl === 'ok') { oks++; continue; }
+      if (lvl === 'mineur') { warns++; }
+      else { fails++; if (lvl === 'critique') critical++; }
+      flagged.push({
+        key: 'pressure_' + row.name, label: `Pression palette ${row.name}`,
+        status: lvl === 'mineur' ? 'warn' : 'fail',
+        value: Math.round(row.avg * 10) / 10, unit: pv.spec.unit, severity: lvl
+      });
+    }
   }
 
   /* %NC : saisi, sinon déduit des caisses problématiques. */
@@ -94,6 +125,13 @@ export function computeSummary(group, measures) {
     const st = fieldStatus(f, measures[f.key]);
     if (st === 'fail') sFail++; else if (st === 'warn') sWarn++;
   }
+  /* La pression EST la fermeté : un lot trop mûr à l'arrivée ne tiendra
+     pas, quelle que soit sa propreté. Elle compte donc aussi ici. */
+  if (pv) {
+    if (pv.count.critique) sFail += 2;
+    else if (pv.count.majeur) sFail += 1;
+    else if (pv.count.mineur) sWarn += 1;
+  }
   const shelf = sFail >= 2 ? 'Minimale' : (sFail === 1 || sWarn >= 2) ? 'Moyenne' : 'Élevée';
 
   /* --- Évaluation --- */
@@ -116,7 +154,8 @@ export function computeSummary(group, measures) {
   return {
     quality, shelf, verdict, stars,
     nc: nc == null ? null : Math.round(nc * 100) / 100,
-    tolerance, fails, warns, oks, critical, flagged
+    tolerance, fails, warns, oks, critical, flagged,
+    pressure: pv ? { worst: pv.worst, count: pv.count, ref: pv.spec } : null
   };
 }
 

@@ -4,7 +4,10 @@ import { state, shell, go, loadRefs, logout } from './app.js';
 import { local, queue, sync } from './store.js';
 import { db, auth } from './supa.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
-import { $, $$, esc, icon, toast, sheet, confirmSheet } from './ui.js';
+import { LANGS, builtinTranslation } from './report-pdf.js';
+import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS } from './pressure.js';
+import { PACKAGING_KINDS, TYPE_LIST, reportType, appliesTo, typesLabel } from './report-types.js';
+import { $, $$, esc, icon, toast, sheet, confirmSheet, getTheme, setTheme } from './ui.js';
 
 const isAdmin = () => state.profile?.role === 'admin';
 
@@ -12,18 +15,105 @@ export function renderSettings() {
   shell('Réglages', `
     <div class="menu">
       ${isAdmin() ? `
-      <button class="menu-item" data-go="#/settings/groups"><span class="ic n">${icon('box')}</span>
+      <button class="menu-item" data-go="#/settings/groups"><span class="ic n">${icon('clipboard')}</span>
         <span class="tx"><b>Produits &amp; critères</b><span>Grilles de contrôle et seuils</span></span><span class="chev">›</span></button>
-      <button class="menu-item" data-go="#/settings/partners"><span class="ic n">${icon('feed')}</span>
-        <span class="tx"><b>Fournisseurs &amp; clients</b><span>${state.partners.length} enregistrés</span></span><span class="chev">›</span></button>
+      <button class="menu-item" data-go="#/settings/partners"><span class="ic n">${icon('truck')}</span>
+        <span class="tx"><b>Carnet d'adresses</b><span>${state.partners.length} enregistré${state.partners.length > 1 ? 's' : ''}</span></span><span class="chev">›</span></button>
       <button class="menu-item" data-go="#/settings/users"><span class="ic n">${icon('users')}</span>
         <span class="tx"><b>Équipe</b><span>Valider et gérer les accès</span></span><span class="chev">›</span></button>` : ''}
-      <button class="menu-item" data-go="#/settings/account"><span class="ic n">${icon('gear')}</span>
+      <button class="menu-item" id="themeBtn"><span class="ic n">${icon('theme')}</span>
+        <span class="tx"><b>Apparence</b><span>${themeLabel()}</span></span><span class="chev">›</span></button>
+      <button class="menu-item" data-go="#/settings/account"><span class="ic n">${icon('badge')}</span>
         <span class="tx"><b>Mon compte</b><span>${esc(state.profile?.email || '')}</span></span><span class="chev">›</span></button>
     </div>`,
     { back: () => go('#/'),
-      onMount() { $$('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go)); } });
+      onMount() {
+        $$('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
+        $('#themeBtn').onclick = openTheme;
+      } });
 }
+
+/* ========================== APPARENCE ========================== */
+const THEMES = [
+  ['auto',  'Automatique', "Suit le réglage du téléphone"],
+  ['light', 'Clair',       "Fond blanc, plus lisible en plein jour"],
+  ['dark',  'Sombre',      "Moins éblouissant en chambre froide"]
+];
+const themeLabel = () => THEMES.find(t => t[0] === getTheme())?.[1] || 'Automatique';
+
+function openTheme() {
+  sheet('Apparence', `<div class="list">${THEMES.map(([v, name, desc]) => `
+    <button class="menu-item" data-t="${v}">
+      <span class="ic n">${icon(v === 'auto' ? 'theme' : v === 'dark' ? 'moon' : 'sun')}</span>
+      <span class="tx"><b>${name}</b><span>${esc(desc)}</span></span>
+      <span class="chev">${getTheme() === v ? '✓' : '›'}</span></button>`).join('')}</div>`,
+    { onMount(el, close) {
+        el.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
+          setTheme(b.dataset.t);
+          close();
+          renderSettings();
+          toast('Apparence : ' + themeLabel().toLowerCase());
+        });
+      } });
+}
+
+
+/* ------------------------ traductions ------------------------
+   Les PDF partent chez des clients étrangers. Les grilles livrées
+   sont traduites d'office ; dès que l'entreprise renomme un critère
+   ou en crée un, c'est ici qu'elle fournit ses propres traductions.
+   Sans elles, le critère reste en français dans le PDF — visible et
+   corrigeable, plutôt qu'une traduction approximative. */
+const OTHER_LANGS = Object.keys(LANGS).filter(l => l !== 'fr');
+
+function i18nBlock(label, i18n) {
+  const auto = builtinTranslation(label);
+  return `<details class="sec" style="margin:2px 0 13px">
+    <summary>Traductions du PDF
+      <span class="count">${auto ? 'automatiques' : (i18n && Object.keys(i18n).length ? 'personnalisées' : 'à compléter')}</span>
+      <span class="caret">▾</span></summary>
+    <div class="body">
+      <p class="muted" style="margin:0 0 10px">${auto
+        ? "Ce libellé fait partie des grilles livrées : il est déjà traduit. Remplissez un champ pour imposer votre propre formulation."
+        : "Laissez vide et le libellé français sera repris tel quel dans le PDF."}</p>
+      ${OTHER_LANGS.map(l => `<div class="field"><label for="tr_${l}">${esc(LANGS[l])}</label>
+        <input type="text" id="tr_${l}" value="${esc(i18n?.[l] || '')}"
+               placeholder="${esc(auto?.[l] || label || '')}"></div>`).join('')}
+    </div></details>`;
+}
+
+/* Portée : à quels types de rapport s'applique cette section ou ce
+   critère. Aucun coché = tous, ce qui est le cas courant et évite
+   d'avoir à cocher trois cases pour chaque nouveau critère. */
+function typesBlock(item) {
+  const sel = Array.isArray(item?.types) ? item.types : [];
+  return `<div class="field"><label>Types de rapport concernés</label>
+    <div class="tgrid" id="typesBox">
+      ${TYPE_LIST.map(T => `<button type="button" class="tbtn" data-t="${T.id}"
+        aria-pressed="${sel.includes(T.id)}">${esc(T.short)}</button>`).join('')}
+    </div>
+    <div class="hint">Aucun coché : le critère s'applique aux trois types de rapport.</div></div>`;
+}
+
+const readTypes = (el) => {
+  const on = [...el.querySelectorAll('#typesBox .tbtn')]
+    .filter(b => b.getAttribute('aria-pressed') === 'true').map(b => b.dataset.t);
+  /* Les trois cochés, c'est « tous » : on n'enregistre rien, la grille
+     reste ainsi valable si un quatrième type apparaît un jour. */
+  return on.length && on.length < TYPE_LIST.length ? on : undefined;
+};
+
+const wireTypes = (el) => el.querySelectorAll('#typesBox .tbtn').forEach(b =>
+  b.onclick = () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true')));
+
+const readI18n = (el) => {
+  const out = {};
+  for (const l of OTHER_LANGS) {
+    const v = el.querySelector('#tr_' + l)?.value.trim();
+    if (v) out[l] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+};
 
 /* ====================== PRODUITS & CRITÈRES ====================== */
 export function renderGroups() {
@@ -86,10 +176,15 @@ function addGroup() {
       } });
 }
 
+/* Type de rapport sélectionné dans l'éditeur de grille. Gardé hors de
+   la fonction pour survivre au redessin après chaque modification. */
+let gridType = '';
+
 export function renderGroupEditor(id) {
   const g = state.groups.find(x => x.id === id);
   if (!g) { toast('Groupe introuvable', 'err'); return go('#/settings/groups'); }
   const cfg = g.config || {};
+  const pr = pressureConfig(g);
 
   shell(g.name, `
     <div class="card pad">
@@ -107,21 +202,69 @@ export function renderGroupEditor(id) {
         <textarea id="cals" style="min-height:64px">${esc((cfg.calibres || []).join(', '))}</textarea></div>
     </div>
 
-    <h3 style="margin:18px 0 10px;font-size:15px">Sections et critères</h3>
-    ${(cfg.sections || []).map((sec, si) => `
-      <details class="sec"><summary>${esc(sec.label)} <span class="count">${sec.fields.length}</span> <span class="caret">▾</span></summary>
+    <div class="card pad" style="margin-top:12px">
+      <h3 style="font-size:14.5px;margin-bottom:4px">Protocole de pression</h3>
+      <p class="muted" style="margin:0 0 12px">Relevé au pénétromètre, facultatif à la saisie.
+      Pour l'avocat : les deux joues de 5 fruits par palette.</p>
+      <div class="row3">
+        <div class="field"><label for="pf">Fruits / palette</label>
+          <input type="number" id="pf" min="1" step="1" value="${pr.fruits}"></div>
+        <div class="field"><label for="ps">Mesures / fruit</label>
+          <input type="number" id="ps" min="1" step="1" value="${pr.sides}"></div>
+        <div class="field"><label for="prf">Référence</label>
+          <input type="number" id="prf" step="0.1" value="${pr.ref}"></div>
+      </div>
+      <div class="hint">La référence sert au bouton de remplissage rapide et à la ligne repère du graphique.</div>
+    </div>
+
+    <div class="card pad" style="margin-top:12px">
+      <h3 style="font-size:14.5px;margin-bottom:4px">Poids minimum par calibre</h3>
+      <p class="muted" style="margin:0 0 12px">Au contrôle production, un fruit pesé sous ce seuil
+      est signalé comme sous-calibré. Laissez vide pour ne rien contrôler sur ce calibre.
+      Le poids maximum n'est pas vérifié : un fruit plus gros profite au client.</p>
+      <div class="wgrid">
+        ${(cfg.calibres || []).map(c => `
+          <div class="wrow">
+            <label for="w_${slug(c)}">${esc(c)}</label>
+            <span><input type="number" id="w_${slug(c)}" data-cal="${esc(c)}" min="0" step="1"
+              value="${(cfg.calibreWeights || {})[c] ?? ''}" placeholder="—"><i>g</i></span>
+          </div>`).join('') || '<p class="muted" style="margin:0">Définissez d\'abord les calibres ci-dessus.</p>'}
+      </div>
+    </div>
+
+    <h3 style="margin:18px 0 6px;font-size:15px">Sections et critères</h3>
+    <!-- On ne contrôle pas les mêmes choses à l'arrivée d'un conteneur
+         et sur une chaîne de conditionnement. Ce filtre montre la
+         grille telle qu'elle se présentera pour un type de rapport
+         donné ; la restriction se règle critère par critère. -->
+    <div class="chips" style="margin-bottom:10px">
+      <button class="chip" data-tf="" aria-pressed="${!gridType}">Tous les rapports</button>
+      ${TYPE_LIST.map(T => `<button class="chip" data-tf="${T.id}" aria-pressed="${gridType === T.id}">${esc(T.short)}</button>`).join('')}
+    </div>
+    ${gridType ? `<p class="muted" style="margin:0 0 10px">Grille telle qu'elle apparaîtra
+      dans un ${esc(reportType(gridType).title.toLowerCase())}.</p>` : ''}
+    ${(cfg.sections || []).map((sec, si) => {
+      const shown = (sec.fields || []).filter(f => appliesTo(f, gridType));
+      if (gridType && (!appliesTo(sec, gridType) || !shown.length)) return '';
+      return `
+      <details class="sec"><summary>${esc(sec.label)} <span class="count">${shown.length}</span>
+        ${typesLabel(sec) ? `<span class="pill sm">${esc(typesLabel(sec))}</span>` : ''} <span class="caret">▾</span></summary>
         <div class="body">
-          ${sec.fields.map((f, fi) => `
+          ${shown.map(f => {
+            const fi = sec.fields.indexOf(f);
+            return `
             <div class="crit" style="cursor:pointer" data-edit="${si}.${fi}">
               <span class="dot ${sevDot(f)}"></span>
-              <span class="lb">${esc(f.label)}<small>${describe(f)}</small></span>
+              <span class="lb">${esc(f.label)}<small>${describe(f)}${
+                typesLabel(f) ? ` · ${esc(typesLabel(f))} seulement` : ''}</small></span>
               <span style="color:var(--ink-3)">›</span>
-            </div>`).join('')}
+            </div>`; }).join('')}
           <div class="btn-row" style="margin-top:10px">
             <button class="btn ghost sm" data-addf="${si}">${icon('plus')} Critère</button>
-            <button class="btn ghost sm" data-delsec="${si}">Supprimer la section</button>
+            <button class="btn ghost sm" data-editsec="${si}">${icon('edit')} Titre &amp; portée</button>
+            <button class="btn ghost sm" data-delsec="${si}">Supprimer</button>
           </div>
-        </div></details>`).join('')}
+        </div></details>`; }).join('')}
 
     <div class="btn-row" style="margin-top:12px">
       <button class="btn ghost" id="addsec">${icon('plus')} Section</button>
@@ -130,6 +273,10 @@ export function renderGroupEditor(id) {
     <div class="sticky-actions"><button class="btn block" id="save">Enregistrer</button></div>`,
     { back: () => go('#/settings/groups'),
       onMount() {
+        $$('[data-tf]').forEach(c => c.onclick = () => {
+          gridType = c.dataset.tf === gridType ? '' : c.dataset.tf;
+          renderGroupEditor(id);
+        });
         $$('[data-edit]').forEach(el => el.onclick = () => {
           const [si, fi] = el.dataset.edit.split('.').map(Number);
           editField(g, si, fi);
@@ -140,17 +287,8 @@ export function renderGroupEditor(id) {
           g.config.sections.splice(+el.dataset.delsec, 1);
           await saveGroup(g); renderGroupEditor(id);
         });
-        $('#addsec').onclick = () => sheet('Nouvelle section', `
-          <div class="field"><label for="sl">Titre</label><input type="text" id="sl" placeholder="Ex. Troubles / Maladies"></div>
-          <button class="btn block" id="ok">Ajouter</button>`,
-          { onMount(el, close) {
-              el.querySelector('#ok').onclick = async () => {
-                const label = el.querySelector('#sl').value.trim();
-                if (!label) return;
-                (g.config.sections ||= []).push({ id: slug(label), label, fields: [] });
-                await saveGroup(g); close(); renderGroupEditor(id);
-              };
-            } });
+        $('#addsec').onclick = () => editSection(g, -1);
+        $$('[data-editsec]').forEach(el => el.onclick = () => editSection(g, +el.dataset.editsec));
         $('#delg').onclick = async () => {
           if (!(await confirmSheet('Supprimer le groupe', 'Les rapports déjà saisis restent lisibles : chacun conserve une copie de sa grille.'))) return;
           await db('product_groups').eq('id', id).remove();
@@ -163,15 +301,52 @@ export function renderGroupEditor(id) {
           g.config.tolerance = Number($('#tol').value) || 10;
           g.config.varieties = splitList($('#vars').value);
           g.config.calibres  = splitList($('#cals').value);
+          const weights = {};
+          $$('[data-cal]').forEach(inp => {
+            const v = inp.value.trim();
+            if (v !== '') weights[inp.dataset.cal] = Number(v);
+          });
+          g.config.calibreWeights = weights;
+          g.config.pressure = {
+            fruits: Math.max(1, Number($('#pf').value) || pr.fruits),
+            sides:  Math.max(1, Number($('#ps').value) || pr.sides),
+            ref:    Number($('#prf').value) || pr.ref,
+            unit:   pr.unit
+          };
           await saveGroup(g);
           toast('Enregistré'); go('#/settings/groups');
         };
       } });
 }
 
+/* Une section se crée, se renomme et se traduit au même endroit. */
+function editSection(g, si) {
+  const isNew = si < 0;
+  const sec = isNew ? { id: '', label: '', fields: [] } : g.config.sections[si];
+  sheet(isNew ? 'Nouvelle section' : 'Titre & portée', `
+    <div class="field"><label for="sl">Titre</label>
+      <input type="text" id="sl" value="${esc(sec.label)}" placeholder="Ex. Troubles / Maladies"></div>
+    ${typesBlock(sec)}
+    ${i18nBlock(sec.label, sec.i18n)}
+    <button class="btn block" id="ok">${isNew ? 'Ajouter' : 'Enregistrer'}</button>`,
+    { onMount(el, close) {
+        wireTypes(el);
+        el.querySelector('#ok').onclick = async () => {
+          const label = el.querySelector('#sl').value.trim();
+          if (!label) return toast('Donnez un titre', 'err');
+          const i18n = readI18n(el), types = readTypes(el);
+          if (isNew) (g.config.sections ||= []).push({ id: slug(label), label, i18n, types, fields: [] });
+          else { sec.label = label; sec.i18n = i18n; sec.types = types; }
+          await saveGroup(g); close(); renderGroupEditor(g.id);
+        };
+      } });
+}
+
 function editField(g, si, fi) {
   const sec = g.config.sections[si];
-  const f = fi >= 0 ? structuredClone(sec.fields[fi]) : { key: '', label: '', type: 'pct', severity: 'majeur' };
+  const f = fi >= 0 ? structuredClone(sec.fields[fi])
+    : { key: '', label: '', type: 'pct', severity: 'majeur',
+        types: gridType ? [gridType] : undefined };
   const isNew = fi < 0;
 
   sheet(isNew ? 'Nouveau critère' : 'Modifier le critère', `
@@ -194,12 +369,15 @@ function editField(g, si, fi) {
     <div class="field" id="optBox" hidden><label for="co">Options</label>
       <textarea id="co" style="min-height:80px" placeholder="Bonne=ok&#10;Acceptable=warn&#10;Mauvaise=fail">${esc((f.options || []).map(o => `${o.v}=${o.s}`).join('\n'))}</textarea>
       <div class="hint">Une option par ligne, suivie de son statut : ok, warn ou fail.</div></div>
+    ${typesBlock(f)}
+    <div id="i18nBox">${i18nBlock(f.label, f.i18n)}</div>
     <div class="field"><label for="ch">Aide affichée sous le critère</label><input type="text" id="ch" value="${esc(f.hint || '')}"></div>
     <div class="btn-row">
       ${isNew ? '' : '<button class="btn ghost danger" style="flex:1" id="del">Supprimer</button>'}
       <button class="btn" style="flex:2" id="ok">${isNew ? 'Ajouter' : 'Enregistrer'}</button>
     </div>`,
     { onMount(el, close) {
+        wireTypes(el);
         const typeSel = el.querySelector('#ct');
         const paintThr = () => {
           const t = typeSel.value;
@@ -232,7 +410,9 @@ function editField(g, si, fi) {
             label, type: typeSel.value,
             unit: el.querySelector('#cu').value.trim() || undefined,
             severity: el.querySelector('#cs').value,
-            hint: el.querySelector('#ch').value.trim() || undefined
+            hint: el.querySelector('#ch').value.trim() || undefined,
+            types: readTypes(el),
+            i18n: readI18n(el)
           };
           if (out.type === 'pct') {
             out.warnAt = numOrU(el.querySelector('#wa')?.value);
@@ -279,13 +459,15 @@ export function renderPartners() {
     <h3 style="margin:16px 0 8px;font-size:15px">${title} <span class="muted">(${by(kind).length})</span></h3>
     <div class="list">${by(kind).map(p => `
       <button class="rep" data-p="${esc(p.id)}">
-        <div class="rep-top"><b>${esc(p.name)}</b></div>
+        <div class="rep-top"><b>${esc(p.name)}</b>${
+          refCount(p) ? `<span class="pill n">${refCount(p)} référence${refCount(p) > 1 ? 's' : ''}</span>` : ''}</div>
         <div class="rep-meta">${[p.country, p.email, p.phone].filter(Boolean).map(esc).join(' · ') || '<span>—</span>'}</div>
       </button>`).join('') || '<p class="muted">Aucun pour l\'instant.</p>'}</div>`;
 
-  shell('Fournisseurs & clients', `
+  shell("Carnet d'adresses", `
     ${block('Fournisseurs', 'fournisseur')}
     ${block('Clients', 'client')}
+    ${block('Transporteurs', 'transporteur')}
     <div class="btn-row" style="margin-top:16px"><button class="btn ghost block" id="add">${icon('plus')} Ajouter</button></div>`,
     { back: () => go('#/settings'),
       onMount() {
@@ -294,14 +476,50 @@ export function renderPartners() {
       } });
 }
 
+/* Nombre de références de pression enregistrées pour un client. */
+const refList = (p) => (p?.config?.pressureRefs || []);
+const refCount = (p) => refList(p).length;
+
+/* Cahier des charges du client : pression attendue par
+   conditionnement. C'est ce que le rapport ira chercher tout seul
+   quand on saisira ce client. Une ligne sans conditionnement sert de
+   valeur par défaut pour tous les autres. */
+function refRowsHtml(refs) {
+  if (!refs.length)
+    return `<p class="muted" style="margin:0 0 8px">Aucune référence. Sans elle, le rapport
+      garde la valeur par défaut du produit et le contrôleur l'ajuste à la main.</p>`;
+  return refs.map((r, i) => `
+    <div class="ref-row" data-r="${i}">
+      <select data-f="group" aria-label="Produit">
+        <option value=""${!r.group ? ' selected' : ''}>Tous produits</option>
+        ${state.groups.map(g => `<option value="${esc(g.id)}"${g.id === r.group ? ' selected' : ''}>${esc(g.config?.icon || '')} ${esc(g.name)}</option>`).join('')}
+      </select>
+      <select data-f="packaging" aria-label="Conditionnement">
+        <option value=""${!r.packaging ? ' selected' : ''}>Tous conditionnements</option>
+        ${PACKAGING_KINDS.map(k => `<option value="${esc(k)}"${k === r.packaging ? ' selected' : ''}>${esc(k)}</option>`).join('')}
+      </select>
+      <span class="seg sm" data-f="mode">
+        <button type="button" data-m="target" aria-pressed="${r.mode !== 'range'}">Valeur</button>
+        <button type="button" data-m="range" aria-pressed="${r.mode === 'range'}">Plage</button>
+      </span>
+      ${r.mode === 'range'
+        ? `<span class="ref-in"><label>Mini <input type="number" step="0.1" data-f="min" value="${r.min ?? ''}"></label>
+             <label>Maxi <input type="number" step="0.1" data-f="max" value="${r.max ?? ''}"></label></span>`
+        : `<span class="ref-in"><label>Cible <input type="number" step="0.1" data-f="ref" value="${r.ref ?? ''}"></label></span>`}
+      <button type="button" class="icon-btn" data-f="del" aria-label="Retirer cette référence">${icon('x')}</button>
+    </div>`).join('');
+}
+
 function editPartner(p) {
   const isNew = !p;
-  p = p || { id: crypto.randomUUID(), kind: 'fournisseur', name: '', active: true };
+  p = p || { id: crypto.randomUUID(), kind: 'fournisseur', name: '', active: true, config: {} };
+  const refs = structuredClone(refList(p));
   sheet(isNew ? 'Nouveau partenaire' : p.name, `
     <div class="field"><label>Type</label>
       <div class="seg" id="kind">
         <button type="button" data-k="fournisseur" aria-pressed="${p.kind === 'fournisseur'}">Fournisseur</button>
         <button type="button" data-k="client" aria-pressed="${p.kind === 'client'}">Client</button>
+        <button type="button" data-k="transporteur" aria-pressed="${p.kind === 'transporteur'}">Transporteur</button>
       </div></div>
     <div class="field"><label for="pn">Nom</label><input type="text" id="pn" value="${esc(p.name)}"></div>
     <div class="row2">
@@ -309,14 +527,57 @@ function editPartner(p) {
       <div class="field"><label for="pp">Téléphone</label><input type="text" id="pp" value="${esc(p.phone || '')}"></div>
     </div>
     <div class="field"><label for="pe">E-mail</label><input type="email" id="pe" value="${esc(p.email || '')}"></div>
+
+    <div class="field" id="refWrap" ${p.kind === 'client' ? '' : 'hidden'}>
+      <label>Pressions attendues</label>
+      <div id="refRows"></div>
+      <button type="button" class="btn ghost sm" id="refAdd">${icon('plus')} Ajouter une référence</button>
+      <div class="hint">Appliquée automatiquement au rapport dès que ce client est saisi.
+        Une valeur cible tolère ${SEV_STEPS.ok} point d'écart ; une plage en tolère ${RANGE_TOL}.<br>
+        La règle la plus précise l'emporte : produit + conditionnement d'abord, puis produit seul,
+        puis conditionnement seul, puis la ligne « tous ».</div>
+    </div>
+
     <div class="btn-row">
       ${isNew ? '' : '<button class="btn ghost danger" style="flex:1" id="del">Supprimer</button>'}
       <button class="btn" style="flex:2" id="ok">Enregistrer</button></div>`,
     { onMount(el, close) {
         let kind = p.kind;
+        const paintRefs = () => {
+          el.querySelector('#refRows').innerHTML = refRowsHtml(refs);
+          el.querySelectorAll('.ref-row').forEach(row => {
+            const i = +row.dataset.r;
+            row.querySelector('[data-f=group]').onchange = (e) => { refs[i].group = e.target.value; };
+            row.querySelector('[data-f=packaging]').onchange = (e) => { refs[i].packaging = e.target.value; };
+            row.querySelectorAll('[data-f=mode] button').forEach(b => b.onclick = () => {
+              refs[i].mode = b.dataset.m;
+              /* Passer en plage sans repartir de zéro : ±1 autour de la
+                 cible, soit exactement sa tolérance. */
+              if (refs[i].mode === 'range' && refs[i].min == null && refs[i].ref != null) {
+                refs[i].min = Math.max(0, Number(refs[i].ref) - 1);
+                refs[i].max = Number(refs[i].ref) + 1;
+              }
+              paintRefs();
+            });
+            ['ref', 'min', 'max'].forEach(f => {
+              const inp = row.querySelector(`[data-f=${f}]`);
+              if (inp) inp.oninput = () => { refs[i][f] = inp.value === '' ? null : Number(inp.value); };
+            });
+            row.querySelector('[data-f=del]').onclick = () => { refs.splice(i, 1); paintRefs(); };
+          });
+        };
+        paintRefs();
+        el.querySelector('#refAdd').onclick = () => {
+          /* La nouvelle ligne reprend le produit de la précédente : on
+             saisit en général les quatre conditionnements d'un même
+             produit à la suite. */
+          refs.push({ group: refs[refs.length - 1]?.group || '', packaging: '', mode: 'target', ref: 13 });
+          paintRefs();
+        };
         el.querySelectorAll('#kind button').forEach(b => b.onclick = () => {
           kind = b.dataset.k;
           el.querySelectorAll('#kind button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.k === kind)));
+          el.querySelector('#refWrap').hidden = kind !== 'client';
         });
         const del = el.querySelector('#del');
         if (del) del.onclick = async () => {
@@ -326,10 +587,16 @@ function editPartner(p) {
           await local.del('partners', p.id); await loadRefs(); renderPartners();
         };
         el.querySelector('#ok').onclick = async () => {
+          /* Une référence incomplète ne sert à rien et s'appliquerait
+             silencieusement de travers : on ne garde que les lignes
+             exploitables. */
+          const keep = kind === 'client' ? refs.filter(r =>
+            r.mode === 'range' ? (r.min != null && r.max != null) : r.ref != null) : [];
           const row = { ...p, kind, name: el.querySelector('#pn').value.trim(),
             country: el.querySelector('#pc').value.trim() || null,
             phone: el.querySelector('#pp').value.trim() || null,
-            email: el.querySelector('#pe').value.trim() || null };
+            email: el.querySelector('#pe').value.trim() || null,
+            config: { ...(p.config || {}), pressureRefs: keep } };
           if (!row.name) return toast('Donnez un nom', 'err');
           await local.put('partners', row);
           await queue('partner', row);
