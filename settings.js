@@ -1,10 +1,10 @@
 /* Réglages : produits & critères, partenaires, équipe, compte. */
 
-import { state, shell, go, loadRefs, logout } from '../app.js';
-import { local, queue, sync } from '../store.js';
-import { db, auth } from '../supa.js';
-import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from '../catalog.js';
-import { $, $$, esc, icon, toast, sheet, confirmSheet } from '../ui.js';
+import { state, shell, go, loadRefs, logout } from './app.js';
+import { local, queue, sync } from './store.js';
+import { db, auth } from './supa.js';
+import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
+import { $, $$, esc, icon, toast, sheet, confirmSheet } from './ui.js';
 
 const isAdmin = () => state.profile?.role === 'admin';
 

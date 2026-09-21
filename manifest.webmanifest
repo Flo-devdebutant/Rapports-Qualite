@@ -12,16 +12,16 @@
   "theme_color": "#ff8725",
   "categories": ["business", "productivity", "utilities"],
   "icons": [
-    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "./icons/icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "./icon-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
   "shortcuts": [
     { "name": "Rapport de réception", "short_name": "Réception", "url": "./#/report/new/reception",
-      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192" }] },
     { "name": "Rapport d'expédition", "short_name": "Expédition", "url": "./#/report/new/expedition",
-      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] },
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192" }] },
     { "name": "Flux des rapports", "short_name": "Flux", "url": "./#/feed",
-      "icons": [{ "src": "./icons/icon-192.png", "sizes": "192x192" }] }
+      "icons": [{ "src": "./icon-192.png", "sizes": "192x192" }] }
   ]
 }

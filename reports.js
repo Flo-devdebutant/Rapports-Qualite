@@ -1,12 +1,12 @@
 /* Flux des rapports (liste filtrable) et fiche d'un rapport. */
 
-import { state, shell, groupById, go, syncBadge } from '../app.js';
-import { local, queue, sync } from '../store.js';
-import { flatFields, fieldStatus, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from '../verdict.js';
-import { $, $$, esc, icon, toast, sheet, confirmSheet, stars, fmtDate, debounce, shareFile, download } from '../ui.js';
-import { buildReportPDF, pdfFilename, LANGS } from '../report-pdf.js';
-import { buildXlsx } from '../xlsx.js';
-import { storage } from '../supa.js';
+import { state, shell, groupById, go, syncBadge } from './app.js';
+import { local, queue, sync } from './store.js';
+import { flatFields, fieldStatus, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
+import { $, $$, esc, icon, toast, sheet, confirmSheet, stars, fmtDate, debounce, shareFile, download } from './ui.js';
+import { buildReportPDF, pdfFilename, LANGS } from './report-pdf.js';
+import { buildXlsx } from './xlsx.js';
+import { storage } from './supa.js';
 
 const filters = { q: '', type: '', group: '', partner: '', verdict: '', from: '', to: '' };
 

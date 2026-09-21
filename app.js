@@ -11,10 +11,10 @@ import { local, sync, startAutoSync, onSync, pendingCount, openDB } from './stor
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
 import { $, esc, icon, toast } from './ui.js';
 import { logoDataUrl } from './logo.js';
-import { renderFeed, renderReportView } from './screens/reports.js';
-import { renderForm } from './screens/form.js';
-import { renderSettings, renderGroups, renderGroupEditor, renderPartners, renderUsers, renderAccount } from './screens/settings.js';
-import { renderStats } from './screens/stats.js';
+import { renderFeed, renderReportView } from './reports.js';
+import { renderForm } from './form.js';
+import { renderSettings, renderGroups, renderGroupEditor, renderPartners, renderUsers, renderAccount } from './settings.js';
+import { renderStats } from './stats.js';
 
 export const state = {
   profile: null,

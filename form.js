@@ -7,13 +7,13 @@
    cinq écrans.
    ------------------------------------------------------------------ */
 
-import { state, shell, groupById, go } from '../app.js';
-import { local, queue, sync } from '../store.js';
+import { state, shell, groupById, go } from './app.js';
+import { local, queue, sync } from './store.js';
 import { flatFields, fieldStatus, computeSummary, applyComputed,
-         VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from '../verdict.js';
-import { ORIGINS } from '../catalog.js';
-import { $, $$, esc, icon, toast, confirmSheet, compressImage, stars } from '../ui.js';
-import { currentUser, storage } from '../supa.js';
+         VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
+import { ORIGINS } from './catalog.js';
+import { $, $$, esc, icon, toast, confirmSheet, compressImage, stars } from './ui.js';
+import { currentUser, storage } from './supa.js';
 
 let draft = null;          // rapport en cours d'édition
 let dirty = false;

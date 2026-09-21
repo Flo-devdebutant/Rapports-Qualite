@@ -1,9 +1,9 @@
 /* Statistiques : ce que le flux ne montre pas — quels fournisseurs
    posent problème, sur quels produits, et comment ça évolue. */
 
-import { state, shell, groupById, go } from '../app.js';
-import { local } from '../store.js';
-import { $, $$, esc, icon, toast } from '../ui.js';
+import { state, shell, groupById, go } from './app.js';
+import { local } from './store.js';
+import { $, $$, esc, icon, toast } from './ui.js';
 import { exportXlsx } from './reports.js';
 
 /* Un tableau, pas un objet : les clés numériques d'un objet sont
