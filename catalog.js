@@ -1,0 +1,215 @@
+/* ------------------------------------------------------------------
+   Catalogue par défaut : groupes de produits + grilles de critères.
+   Les seuils viennent des normes CEE-ONU FFV-42 (avocat) et FFV-45
+   (mangue) et des repères filière cités dans le cahier des charges.
+   Tout est modifiable depuis Réglages > Produits & critères : ce
+   fichier ne sert qu'à initialiser une base vide.
+   ------------------------------------------------------------------ */
+
+/* Types de champ :
+     num     -> valeur numérique, vert si dans [okMin, okMax]
+     pct     -> pourcentage de défaut, vert < warnAt, orange < failAt, rouge au-delà
+     bool    -> attendu = conforme
+     choice  -> liste d'options, chacune porte son statut
+     text    -> libre, jamais noté
+   severity : 'mineur' | 'majeur' | 'critique'
+     - mineur  : sort du vert => orange
+     - majeur  : sort du vert => rouge, pèse sur la qualité
+     - critique: sort du vert => rouge + non-conformité directe
+   scope : sections/champs affichés selon le type de rapport.          */
+
+const EMBALLAGE = {
+  id: 'emballage', label: "Emballage",
+  fields: [
+    { key: 'pkg_type', label: "Type d'emballage", type: 'choice', severity: 'mineur',
+      options: [ {v:'Carton', s:'ok'}, {v:'Plateau bois', s:'ok'}, {v:'Caisse plastique', s:'ok'}, {v:'Vrac', s:'warn'} ] },
+    { key: 'pkg_cond', label: "Condition d'emballage", type: 'choice', severity: 'majeur',
+      options: [ {v:'Bonne', s:'ok'}, {v:'Acceptable', s:'warn'}, {v:'Mauvaise', s:'fail'} ] },
+    { key: 'pkg_gross', label: 'Poids brut', unit: 'kg', type: 'num', step: 0.01 },
+    { key: 'pkg_tare',  label: 'Tare',       unit: 'kg', type: 'num', step: 0.01 },
+    { key: 'pkg_net',   label: 'Poids net',  unit: 'kg', type: 'num', step: 0.01, computed: 'pkg_gross - pkg_tare' }
+  ]
+};
+
+const PALETTISATION = {
+  id: 'palettisation', label: 'Palettisation',
+  fields: [
+    { key: 'pal_count', label: 'N° de palettes', type: 'num', step: 0.01 },
+    { key: 'col_count', label: 'N° de colis',    type: 'num', step: 1 },
+    { key: 'pal_state', label: 'État palettisation', type: 'choice', severity: 'mineur',
+      options: [ {v:'Bonne', s:'ok'}, {v:'Acceptable', s:'warn'}, {v:'Mauvaise', s:'fail'} ] }
+  ]
+};
+
+const TEMPERATURE = (okMin, okMax) => ({
+  id: 'temperature', label: 'Température marchandise',
+  fields: [
+    { key: 'temp_pulp', label: 'Température pulpe', unit: '°C', type: 'num', step: 0.1,
+      okMin, okMax, severity: 'majeur' }
+  ]
+});
+
+const TRACABILITE = {
+  id: 'tracabilite', label: 'Traçabilité',
+  fields: [
+    { key: 'lbl_conf', label: 'Conformité étiquetage', type: 'bool', severity: 'majeur' },
+    { key: 'cat_conf', label: 'Conformité catégorie',  type: 'bool', severity: 'majeur' }
+  ]
+};
+
+const ASPECT = {
+  id: 'aspect', label: 'Aspect',
+  fields: [
+    { key: 'asp_gen', label: 'Apparence générale', type: 'choice', severity: 'majeur',
+      options: [ {v:'Bonne', s:'ok'}, {v:'Acceptable', s:'warn'}, {v:'Améliorable', s:'fail'}, {v:'Mauvaise', s:'fail'} ] },
+    { key: 'asp_pulp', label: 'Apparence pulpe', type: 'choice', severity: 'majeur',
+      options: [ {v:'Bonne', s:'ok'}, {v:'Acceptable', s:'warn'}, {v:'Améliorable', s:'fail'}, {v:'Mauvaise', s:'fail'} ] }
+  ]
+};
+
+const QUANTITE = {
+  id: 'quantite', label: 'Quantité évaluation',
+  fields: [
+    { key: 'qt_sample',  label: 'Caisses échantillon',   type: 'num', step: 1 },
+    { key: 'qt_problem', label: 'Caisses problématiques', type: 'num', step: 1 },
+    { key: 'nc_pct',     label: '%NC', unit: '%', type: 'num', step: 0.01,
+      computed: 'qt_problem / qt_sample * 100', okMin: 0, okMax: 10, severity: 'critique',
+      hint: 'Tolérance catégorie I : 10 % de défauts totaux' }
+  ]
+};
+
+/* --------------------------- AVOCAT --------------------------- */
+const AVOCAT = {
+  id: 'avocat', name: 'Avocat', icon: '🥑', position: 1, active: true,
+  config: {
+    varieties: ['Hass', 'Ettinger', 'Fuerte', 'Pinkerton', 'Reed', 'Edranol', 'Lamb Hass', 'Bacon', 'Zutano'],
+    calibres: ['4','6','8','10','12','14','16','18','20','22','24','26','28','30','32','S'],
+    categories: ['Extra', 'I', 'II'],
+    tolerance: 10,
+    sections: [
+      PALETTISATION,
+      EMBALLAGE,
+      TEMPERATURE(4, 8),
+      TRACABILITE,
+      ASPECT,
+      { id: 'maturite', label: 'Maturité', fields: [
+        { key: 'dry_matter', label: 'Matière sèche', unit: '%', type: 'num', step: 0.1,
+          okMin: 21, okMax: 40, severity: 'critique',
+          hint: 'FFV-42 : 21 % Hass · 20 % Fuerte/Pinkerton/Reed/Edranol · 19 % autres' },
+        { key: 'ripe_stage', label: 'Stade de mûrissement', type: 'choice', severity: 'mineur',
+          options: [ {v:'Dur (> 10 kg)', s:'ok'}, {v:'En mûrissement (2,2–10 kg)', s:'ok'},
+                     {v:'Bon pour rayon (1,1–2,1 kg)', s:'ok'}, {v:'Prêt à manger (0,7–1,0 kg)', s:'warn'},
+                     {v:'À consommer (0,4–0,6 kg)', s:'warn'}, {v:'Surmûr (< 0,4 kg)', s:'fail'} ] }
+      ]},
+      { id: 'qualitatifs', label: 'Qualitatifs', fields: [
+        { key: 'firm_min', label: 'Dureté min', unit: 'kg', type: 'num', step: 0.01 },
+        { key: 'firm_max', label: 'Dureté max', unit: 'kg', type: 'num', step: 0.01 },
+        { key: 'firm_avg', label: 'Dureté moyenne', unit: 'kg', type: 'num', step: 0.01,
+          okMin: 1, okMax: 14, severity: 'majeur' },
+        { key: 'soft_pct', label: 'Mûr/Mou', unit: '%', type: 'pct', warnAt: 5, failAt: 10, severity: 'majeur' }
+      ]},
+      { id: 'troubles', label: 'Troubles / Maladies', fields: [
+        { key: 'spots_pct',    label: 'Taches / Maculatures', unit: '%', type: 'pct', warnAt: 5,  failAt: 10, severity: 'majeur' },
+        { key: 'lenticel_pct', label: 'Dommages lenticelles', unit: '%', type: 'pct', warnAt: 5,  failAt: 10, severity: 'mineur' },
+        { key: 'bruise_pct',   label: 'Blessures / Chocs',    unit: '%', type: 'pct', warnAt: 3,  failAt: 8,  severity: 'majeur' },
+        { key: 'chill_pct',    label: 'Dégâts de froid',      unit: '%', type: 'pct', warnAt: 2,  failAt: 5,  severity: 'majeur' },
+        { key: 'vasc_pct',     label: 'Brunissement vasculaire', unit: '%', type: 'pct', warnAt: 5, failAt: 10, severity: 'majeur' },
+        { key: 'sunburn_pct',  label: 'Coups de soleil',      unit: '%', type: 'pct', warnAt: 3,  failAt: 8,  severity: 'mineur' },
+        { key: 'decay_pct',    label: 'Pourriture / Anthracnose', unit: '%', type: 'pct', warnAt: 0.5, failAt: 1, severity: 'critique',
+          hint: 'FFV-42 : tolérance 1 % de pourriture' }
+      ]},
+      QUANTITE
+    ]
+  }
+};
+
+/* --------------------------- MANGUE --------------------------- */
+const MANGUE = {
+  id: 'mangue', name: 'Mangue', icon: '🥭', position: 2, active: true,
+  config: {
+    varieties: ['Kent', 'Keitt', 'Tommy Atkins', 'Palmer', 'Haden', 'Osteen', 'Ataulfo', 'Kasturi', 'Aya', 'Shelly', 'Noa', 'David', 'Maya'],
+    calibres: ['A (200–350 g)', 'B (351–550 g)', 'C (551–800 g)', 'D (> 800 g)', '6', '7', '8', '9', '10', '12', '14'],
+    categories: ['Extra', 'I', 'II'],
+    tolerance: 10,
+    sections: [
+      PALETTISATION,
+      EMBALLAGE,
+      TEMPERATURE(8, 12),
+      TRACABILITE,
+      ASPECT,
+      { id: 'transport', label: 'Transport', fields: [
+        { key: 'freight', label: 'Mode de fret', type: 'choice', severity: 'mineur',
+          options: [ {v:'Aérien', s:'ok'}, {v:'Maritime', s:'ok'} ] }
+      ]},
+      { id: 'maturite', label: 'Maturité', fields: [
+        { key: 'brix', label: 'Brix', unit: '°Bx', type: 'num', step: 0.1, okMin: 12, okMax: 25, severity: 'majeur',
+          hint: 'Repère filière : moyenne ≈ 14 °Bx' },
+        { key: 'dry_matter', label: 'Matière sèche', unit: '%', type: 'num', step: 0.1, okMin: 14, okMax: 30, severity: 'majeur' },
+        { key: 'skin_color', label: 'Couleur peau', type: 'choice', severity: 'mineur',
+          options: [ {v:'Verte', s:'ok'}, {v:'Tournante', s:'ok'}, {v:'Colorée', s:'ok'}, {v:'Hétérogène', s:'warn'} ] },
+        { key: 'pulp_color', label: 'Couleur pulpe', type: 'choice', severity: 'mineur',
+          options: [ {v:'Jaune clair', s:'ok'}, {v:'Jaune orangé', s:'ok'}, {v:'Orange', s:'ok'}, {v:'Blanchâtre', s:'warn'} ] }
+      ]},
+      { id: 'qualitatifs', label: 'Qualitatifs', fields: [
+        { key: 'firm_min', label: 'Dureté min', unit: 'kg', type: 'num', step: 0.01 },
+        { key: 'firm_max', label: 'Dureté max', unit: 'kg', type: 'num', step: 0.01 },
+        { key: 'firm_avg', label: 'Dureté moyenne', unit: 'kg', type: 'num', step: 0.01, okMin: 1, okMax: 12, severity: 'majeur' },
+        { key: 'soft_pct', label: 'Mûr/Mou', unit: '%', type: 'pct', warnAt: 5, failAt: 10, severity: 'majeur' }
+      ]},
+      { id: 'troubles', label: 'Troubles / Maladies', fields: [
+        { key: 'sapburn_pct',  label: 'Brûlure de sève (sap burn)', unit: '%', type: 'pct', warnAt: 3, failAt: 8, severity: 'majeur' },
+        { key: 'anthrac_pct',  label: 'Anthracnose / Taches noires', unit: '%', type: 'pct', warnAt: 0.5, failAt: 1, severity: 'critique' },
+        { key: 'stemrot_pct',  label: 'Pourriture pédonculaire',     unit: '%', type: 'pct', warnAt: 0.5, failAt: 1, severity: 'critique' },
+        { key: 'jelly_pct',    label: 'Effondrement interne / Jelly seed', unit: '%', type: 'pct', warnAt: 3, failAt: 8, severity: 'majeur' },
+        { key: 'chill_pct',    label: 'Dégâts de froid',  unit: '%', type: 'pct', warnAt: 2, failAt: 5, severity: 'majeur' },
+        { key: 'lenticel_pct', label: 'Taches de lenticelles', unit: '%', type: 'pct', warnAt: 5, failAt: 10, severity: 'mineur' },
+        { key: 'spots_pct',    label: 'Taches / Maculatures', unit: '%', type: 'pct', warnAt: 5, failAt: 10, severity: 'majeur' }
+      ]},
+      QUANTITE
+    ]
+  }
+};
+
+/* ------------------- GABARIT GÉNÉRIQUE F&L ------------------- */
+const GENERIQUE = {
+  id: 'generique', name: 'Fruits & légumes', icon: '🧺', position: 3, active: true,
+  config: {
+    varieties: [],
+    calibres: [],
+    categories: ['Extra', 'I', 'II'],
+    tolerance: 10,
+    sections: [
+      PALETTISATION,
+      EMBALLAGE,
+      TEMPERATURE(0, 12),
+      TRACABILITE,
+      ASPECT,
+      { id: 'maturite', label: 'Maturité', fields: [
+        { key: 'brix', label: 'Brix', unit: '°Bx', type: 'num', step: 0.1 },
+        { key: 'firm_avg', label: 'Fermeté moyenne', unit: 'kg', type: 'num', step: 0.01 },
+        { key: 'color', label: 'Couleur', type: 'choice', severity: 'mineur',
+          options: [ {v:'Conforme', s:'ok'}, {v:'Hétérogène', s:'warn'}, {v:'Non conforme', s:'fail'} ] }
+      ]},
+      { id: 'troubles', label: 'Défauts', fields: [
+        { key: 'minor_pct',  label: 'Défauts mineurs',  unit: '%', type: 'pct', warnAt: 8, failAt: 15, severity: 'mineur' },
+        { key: 'major_pct',  label: 'Défauts majeurs',  unit: '%', type: 'pct', warnAt: 5, failAt: 10, severity: 'majeur' },
+        { key: 'decay_pct',  label: 'Pourriture',       unit: '%', type: 'pct', warnAt: 0.5, failAt: 1, severity: 'critique' }
+      ]},
+      QUANTITE
+    ]
+  }
+};
+
+export const DEFAULT_GROUPS = [AVOCAT, MANGUE, GENERIQUE];
+
+/* Origines proposées par défaut (code ISO affiché tel quel dans le PDF). */
+export const ORIGINS = [
+  'IL','MA','ES','PE','CL','ZA','KE','CO','MX','BR','CI','ML','SN','EG','TR','FR','PT','IT','DO','CR','GT','VN','IN','PK','TH','AU','NL'
+];
+
+/* Départements / dépôts. */
+export const DEFAULT_SETTINGS = {
+  company: 'SARL Mehadrin International',
+  departments: ['Rungis', 'Perpignan', 'Châteaurenard'],
+  tolerance: 10
+};
