@@ -34,7 +34,11 @@ export const REPORT_TYPES = {
     refKey: 'bl',
     refPlaceholder: 'Bon de livraison',
     voyage: false,
-    packaging: false,
+    /* Le conditionnement est connu au départ, et la référence de
+       pression du client en dépend (Monoprix avocat vrac ≠ avocat
+       premium) : sans ce champ, une règle client par conditionnement
+       ne s'appliquerait jamais à l'expédition. */
+    packaging: true,
     weights: false,
     groups: null,
     icon: 'share',
@@ -53,7 +57,10 @@ export const REPORT_TYPES = {
     voyage: false,
     packaging: true,        // conditionnement propre à la production
     weights: true,          // poids par fruit, pour repérer les sous-calibrés
-    groups: ['avocat', 'mangue'],
+    /* Aucune liste fermée de produits : un groupe créé plus tard
+       (prune, litchi…) doit pouvoir passer en contrôle production sans
+       qu'on revienne modifier le code. */
+    groups: null,
     defaultGroup: 'avocat',
     icon: 'clipboard',
     tone: 'n'
@@ -76,6 +83,53 @@ export function appliesTo(item, type) {
   if (!Array.isArray(t) || !t.length) return true;
   if (!type) return true;               // contexte sans type : on ne cache rien
   return t.includes(type);
+}
+
+/* Masquer plutôt que supprimer : une section ou un critère dont on n'a
+   pas l'usage cette saison reste dans la grille, prêt à resservir. Il
+   ne s'affiche simplement dans aucun rapport. */
+export const isHidden = (item) => item?.hidden === true;
+
+/* Portée EFFECTIVE d'un critère : la sienne, ramenée dans celle de sa
+   section. Si les deux se contredisent — section « Réception,
+   Expédition » et critère réservé à la Production — c'est la section
+   qui fait foi. Sans cette règle, la combinaison ne s'affichait dans
+   AUCUN des trois rapports : la section disparaissait de la saisie tout
+   en restant listée dans les réglages, et rien n'indiquait pourquoi.
+   Le calcul se fait à la lecture, donc une grille déjà abîmée redevient
+   correcte sans qu'on ait à la réparer ni à la ré-enregistrer. */
+export function fieldScope(sec, f) {
+  const st = Array.isArray(sec?.types) && sec.types.length ? sec.types : null;
+  const ft = Array.isArray(f?.types)   && f.types.length   ? f.types   : null;
+  if (!ft) return st;
+  if (!st) return ft;
+  const keep = ft.filter(t => st.includes(t));
+  return keep.length ? keep : st;
+}
+
+/* Visible dans un rapport de ce type ? */
+export const fieldLive = (sec, f, type) =>
+  !isHidden(sec) && !isHidden(f) && appliesTo({ types: fieldScope(sec, f) }, type);
+
+/* Même règle, écrite dans la grille cette fois : la contradiction est
+   effacée pour de bon. Appelée avant chaque enregistrement. Renvoie
+   `true` si quelque chose a bougé, pour que l'appelant sache qu'il a
+   une réparation à persister. */
+export function normalizeSections(sections) {
+  let changed = false;
+  const same = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
+  for (const s of sections || []) {
+    if (Array.isArray(s.types) && s.types.length >= TYPE_IDS.length) { delete s.types; changed = true; }
+    const scope = Array.isArray(s.types) && s.types.length ? s.types : null;
+    for (const f of s.fields || []) {
+      const before = f.types;
+      const eff = fieldScope(s, f);
+      if (!eff || same(eff, scope) || eff.length >= TYPE_IDS.length) { if ('types' in f) { delete f.types; } }
+      else f.types = eff;
+      if (!same(before, f.types)) changed = true;
+    }
+  }
+  return changed;
 }
 
 /* « Réception, Production » — pour afficher la restriction. */

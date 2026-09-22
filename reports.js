@@ -15,6 +15,15 @@ import { reportType, TYPE_LIST } from './report-types.js';
 
 const filters = { q: '', type: '', group: '', partner: '', verdict: '', from: '', to: '' };
 
+/* La grille à appliquer à un rapport : celle qui a été FIGÉE à son
+   enregistrement, jamais la grille vivante du produit. Un rapport de
+   mars doit rester lisible — et rééditable à l'identique — même si les
+   seuils, les sections ou les critères ont bougé depuis. Une seule
+   définition pour l'écran, le PDF et l'Excel : les trois disaient
+   autrefois trois choses légèrement différentes. */
+export const gridOf = (r, g) =>
+  r?.criteria_snapshot ? { config: r.criteria_snapshot, name: g?.name, id: g?.id } : g;
+
 /* ============================== FLUX ============================== */
 export async function renderFeed({ refresh = true } = {}) {
   /* Ouvrir le flux, c'est demander « quoi de neuf dans l'équipe ? ».
@@ -112,9 +121,9 @@ async function paintList(rows) {
         ${r._dirty ? '<span style="color:var(--warn)">• à envoyer</span>' : ''}
       </div>
       <div class="rep-tags">
-        <span class="pill ${QUALITY_STATUS[s.quality]}">${esc(s.quality || '—')}</span>
-        <span class="pill ${SHELF_STATUS[s.shelf]}">${esc(s.shelf || '—')}</span>
-        <span class="pill ${VERDICT_STATUS[s.verdict]}">${esc(s.verdict || '—')}</span>
+        <span class="pill ${QUALITY_STATUS[s.quality] || ''}">${esc(s.quality || '—')}</span>
+        <span class="pill ${SHELF_STATUS[s.shelf] || ''}">${esc(s.shelf || '—')}</span>
+        <span class="pill ${VERDICT_STATUS[s.verdict] || ''}">${esc(s.verdict || '—')}</span>
         ${s.nc != null ? `<span class="pill">${s.nc} %NC</span>` : ''}
       </div>
       ${r.photos?.length ? `<div class="thumbs" data-thumbs="${esc(r.id)}"></div>` : ''}`;
@@ -124,14 +133,32 @@ async function paintList(rows) {
   }
 }
 
+/* Chaque vignette crée une URL d'objet, et le flux se redessine à
+   chaque frappe dans la recherche comme à chaque puce de filtre.
+   Sans libération, deux cents rapports et dix frappes retenaient
+   plusieurs milliers de JPEG en mémoire jusqu'au rechargement : le
+   système finissait par tuer l'application. On libère dès que le
+   navigateur a décodé l'image — elle reste affichée. */
+const showBlob = (img, url) => {
+  img.onload = img.onerror = () => URL.revokeObjectURL(url);
+  img.src = url;
+};
+
 async function paintThumbs(r) {
   const box = document.querySelector(`[data-thumbs="${CSS.escape(r.id)}"]`);
   if (!box) return;
   for (const p of r.photos.slice(0, 4)) {
     const blob = p.localId ? (await local.get('photos', p.localId))?.blob : null;
-    const src = blob ? URL.createObjectURL(blob) : (p.uploaded ? await storage.signedUrl(p.path) : null);
-    if (!src) continue;
-    const img = new Image(); img.src = src; img.alt = '';
+    const img = new Image(); img.alt = '';
+    if (blob) showBlob(img, URL.createObjectURL(blob));
+    else {
+      const src = p.uploaded ? await storage.signedUrl(p.path) : null;
+      if (!src) continue;
+      img.src = src;
+    }
+    /* La boucle attend la base locale : la liste a pu être redessinée
+       entre-temps, et la case n'appartient plus à la page affichée. */
+    if (!box.isConnected) { if (blob) URL.revokeObjectURL(img.src); return; }
     box.appendChild(img);
   }
 }
@@ -169,6 +196,7 @@ function openFilters() {
 
 /* ============================= FICHE ============================= */
 export async function renderReportView(id) {
+  releaseViewPhotos();   // les URL d'objet de la fiche précédente
   const r = await local.get('reports', id);
   if (!r) { toast('Rapport introuvable', 'err'); return go('#/feed'); }
   const g = groupById(r.product_group_id);
@@ -178,9 +206,7 @@ export async function renderReportView(id) {
   const mine = r.created_by === state.profile?.id;
   const canEdit = state.profile?.role === 'admin' || (state.profile?.role === 'inspecteur' && mine);
 
-  /* La grille figée à l'enregistrement prime : un rapport de mars doit
-     rester lisible même si les seuils ont bougé depuis. */
-  const grid = r.criteria_snapshot ? { config: r.criteria_snapshot, name: g?.name } : g;
+  const grid = gridOf(r, g);
   const fields = flatFields(grid || {}, r.type);
   const bySection = new Map();
   for (const f of fields) {
@@ -192,9 +218,9 @@ export async function renderReportView(id) {
   shell(T.title, `
     <div class="card pad">
       <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-        <span class="pill ${QUALITY_STATUS[s.quality]}">Qualité : ${esc(s.quality || '—')}</span>
-        <span class="pill ${SHELF_STATUS[s.shelf]}">Conservabilité : ${esc(s.shelf || '—')}</span>
-        <span class="pill ${VERDICT_STATUS[s.verdict]}">${esc(s.verdict || '—')}</span>
+        <span class="pill ${QUALITY_STATUS[s.quality] || ''}">Qualité : ${esc(s.quality || '—')}</span>
+        <span class="pill ${SHELF_STATUS[s.shelf] || ''}">Conservabilité : ${esc(s.shelf || '—')}</span>
+        <span class="pill ${VERDICT_STATUS[s.verdict] || ''}">${esc(s.verdict || '—')}</span>
       </div>
       <div style="display:flex;align-items:center;gap:12px">
         ${stars(s.stars)}
@@ -227,7 +253,7 @@ export async function renderReportView(id) {
       <details class="sec" open style="margin-top:12px"><summary>${esc(label)} <span class="caret">▾</span></summary>
         <div class="body">${list.map(f => {
           const st = fieldStatus(f, m[f.key]);
-          const val = f.type === 'bool' ? (m[f.key] === true ? 'Conforme' : 'Non conforme')
+          const val = f.type === 'bool' ? (isYes(m[f.key]) ? 'Conforme' : 'Non conforme')
                     : `${fmtVal(m[f.key])}${f.unit && f.type !== 'choice' ? ' ' + f.unit : ''}`;
           return kv(f.label, val, st);
         }).join('')}</div></details>`).join('')}
@@ -326,7 +352,7 @@ const nonOk = (pv) => pv.count.mineur + pv.count.majeur + pv.count.critique;
 const refScope = (p) => p?.refScope || p?.refPack || '';
 
 /* Origines du rapport, quelle que soit la version qui l'a écrit. */
-function originList(h) {
+export function originList(h) {
   if (Array.isArray(h?.origins) && h.origins.length) return h.origins;
   if (Array.isArray(h?.calibres)) {
     const set = [...new Set(h.calibres.map(c => (c.o || '').toUpperCase()).filter(Boolean))];
@@ -352,19 +378,34 @@ function calibreRows(r) {
 const kv = (k, v, status) => `<div class="kv"><span class="k">${esc(k)}</span>
   <span class="v">${status ? `<span class="dot ${status}"></span>` : ''}${esc(v ?? '')}</span></div>`;
 const fmtVal = (v) => typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(2)) : (v ?? '');
+/* Un booléen peut revenir du serveur en chaîne selon les allers-retours
+   JSON. Sans cette normalisation, l'écran affichait « Non conforme »
+   à côté d'une pastille verte, le PDF disait « Conforme » et l'Excel
+   sortait la chaîne brute — trois lectures pour une même mesure. */
+export const isYes = (v) => v === true || v === 'true' || v === 1 || v === '1';
 
 async function paintViewPhotos(r) {
   const grid = $('#viewPhotos');
+  if (!grid) return;
   for (const [i, p] of r.photos.entries()) {
     const blob = p.localId ? (await local.get('photos', p.localId))?.blob : null;
     const src = blob ? URL.createObjectURL(blob) : (p.uploaded ? await storage.signedUrl(p.path) : null);
     if (!src) continue;
+    if (!grid.isConnected) { if (blob) URL.revokeObjectURL(src); return; }
     const cell = document.createElement('div');
     cell.className = 'ph';
     cell.innerHTML = `<img alt="Photo ${i + 1}" src="${src}">`;
+    /* L'URL sert encore à l'agrandissement : on ne la libère qu'en
+       quittant la fiche. */
+    viewUrls.push(src);
     cell.onclick = () => sheet('', `<img src="${src}" alt="" style="width:100%;border-radius:12px">`);
     grid.appendChild(cell);
   }
+}
+let viewUrls = [];
+export function releaseViewPhotos() {
+  for (const u of viewUrls) { if (u.startsWith('blob:')) URL.revokeObjectURL(u); }
+  viewUrls = [];
 }
 
 async function duplicate(r) {
@@ -373,7 +414,12 @@ async function duplicate(r) {
     id: crypto.randomUUID(), report_no: null,
     report_date: new Date().toISOString(),
     measures: {}, summary: {}, photos: [], remarks: '',
-    _dirty: false
+    _dirty: false,
+    /* La copie est une SAISIE EN COURS, pas un rapport. Sans ce
+       drapeau, toucher « Dupliquer » puis revenir en arrière publiait
+       aussitôt dans le flux de l'équipe un rapport vide, sans verdict
+       et impossible à distinguer d'un vrai. */
+    _draft: true, _draftAt: Date.now()
   };
   await local.put('reports', copy);
   go(`#/report/${copy.id}/edit`);
@@ -415,7 +461,12 @@ async function exportFlow(r, g, action) {
               name = reportFilename(r, g, 'xlsx');
             } else {
               await local.meta('lastLang', b.dataset.l);
-              blob = await buildReportPDF(r, g, { lang: b.dataset.l, company: state.settings.company });
+              /* Le PDF se construit sur la grille FIGÉE du rapport, comme
+                 l'écran et l'Excel. Lui passer la grille vivante, c'était
+                 rééditer en avril un rapport de mars avec les seuils
+                 d'avril : une ligne rouge à l'écran disparaissait du
+                 document envoyé au client, ou en ressortait verte. */
+              blob = await buildReportPDF(r, gridOf(r, g), { lang: b.dataset.l, company: state.settings.company });
               name = reportFilename(r, g, 'pdf');
             }
             await deliver(blob, name, partage,
@@ -473,12 +524,11 @@ export function buildReportsXlsx(rows) {
   const detail = [['N° rapport','Date','Partenaire','Groupe','Section','Critère','Valeur','Unité','Statut']];
   for (const r of rows) {
     const g = groupById(r.product_group_id);
-    const grid = r.criteria_snapshot ? { config: r.criteria_snapshot } : g;
-    for (const f of flatFields(grid || {})) {
+    for (const f of flatFields(gridOf(r, g) || {})) {
       const v = r.measures?.[f.key];
       if (v === '' || v == null) continue;
       detail.push([r.report_no || '', fmtDate(r.report_date), r.partner_name || '', g?.name || '',
-        f.sectionLabel, f.label, typeof v === 'boolean' ? (v ? 'Conforme' : 'Non conforme') : v,
+        f.sectionLabel, f.label, f.type === 'bool' ? (isYes(v) ? 'Conforme' : 'Non conforme') : v,
         f.unit || '', fieldStatus(f, v) || '']);
     }
   }
@@ -488,7 +538,15 @@ export function buildReportsXlsx(rows) {
     { name: 'Mesures', rows: detail }
   ]);
 }
-const num = (v) => (v === '' || v == null) ? '' : Number(v);
+/* Une valeur non convertible sort en cellule VIDE, pas en « NaN » :
+   `Number('12,5')` donne NaN, `typeof NaN === 'number'` mais `isFinite`
+   échoue, et le tableur affichait alors la chaîne « NaN » dans la
+   colonne Poids net. */
+const num = (v) => {
+  if (v === '' || v == null) return '';
+  const n = Number(v);
+  return isFinite(n) ? n : '';
+};
 
 /* On exporte aussi le verdict de pression : c'est sur cette colonne
    qu'on filtrera les lots à réclamer, pas sur la moyenne brute. */

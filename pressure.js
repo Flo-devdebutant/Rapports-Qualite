@@ -20,7 +20,13 @@ export const DEFAULT_PRESSURE = { fruits: 5, sides: 2, ref: 13, unit: 'kg' };
    donc borné à la saisie comme au calcul. */
 export const LIMITS = { min: 0, max: 13 };
 
+/* Un champ vide n'est pas zéro. `Number('')` vaut 0, et laisser passer
+   ce 0 transformerait « l'admin a effacé la référence » en « la
+   référence est 0 kg » : toutes les palettes d'un produit basculeraient
+   critiques d'un coup. Le vide remonte donc en `null`, et l'appelant
+   décide du repli. */
 export const clampP = (v) => {
+  if (v === '' || v === null || v === undefined) return null;
   const n = Number(v);
   if (!isFinite(n)) return null;
   return Math.min(LIMITS.max, Math.max(LIMITS.min, n));
@@ -39,7 +45,7 @@ export function pressureConfig(group) {
   return {
     fruits: Number(c.fruits) > 0 ? Number(c.fruits) : DEFAULT_PRESSURE.fruits,
     sides:  Number(c.sides)  > 0 ? Number(c.sides)  : DEFAULT_PRESSURE.sides,
-    ref:    c.ref != null && c.ref !== '' ? clampP(c.ref) : DEFAULT_PRESSURE.ref,
+    ref:    clampP(c.ref) ?? DEFAULT_PRESSURE.ref,
     unit:   c.unit || DEFAULT_PRESSURE.unit
   };
 }
@@ -159,7 +165,7 @@ export function refSpec(pressures, group) {
     return { mode: 'range', min: Math.min(lo, hi), max: Math.max(lo, hi), tol: RANGE_TOL,
              unit, source: p.refSource || 'manuel', client: p.refClient || '' };
   }
-  const ref = clampP(num(p.ref != null ? p.ref : cfg.ref));
+  const ref = clampP(p.ref) ?? clampP(cfg.ref);
   if (ref == null) return null;
   return { mode: 'target', ref, unit, source: p.refSource || 'produit', client: p.refClient || '' };
 }
@@ -243,8 +249,11 @@ export function partnerRef(partner, group, packaging) {
   return null;
 }
 
-/* Décrit la référence en une ligne, pour l'écran comme pour le PDF. */
-export function refText(spec, t) {
+/* Décrit la référence en une ligne, pour l'écran comme pour l'export.
+   Pas de paramètre de langue : le PDF, lui, compose sa propre ligne
+   avec son dictionnaire (voir `drawPressures`). La signature en
+   promettait un qui n'a jamais rien traduit. */
+export function refText(spec) {
   if (!spec) return '';
   const u = spec.unit || 'kg';
   return spec.mode === 'range'

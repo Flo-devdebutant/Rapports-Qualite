@@ -43,9 +43,27 @@ const esc = (bytes) => bytes.map(b =>
 /* Largeurs Helvetica (unités/1000) — suffisant pour couper les
    textes trop longs sans déborder des colonnes. */
 const HELV = [278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584];
+/* Ponctuation et symboles de la plage haute de cp1252, mesurés dans
+   Helvetica. Sans eux, « · » (0xB7, 278 réellement) et « ° » (0xB0,
+   400) étaient facturés 556 : une ligne comme « Moyenne du lot 12.4 kg
+   · min 9.8 · max 13.0 » se mesurait cinq points trop large, d'où une
+   cellule coupée ou un titre centré de travers sans raison visible. */
+const HELV_HIGH = {
+  0x80: 556, 0x82: 222, 0x83: 556, 0x84: 333, 0x85: 1000, 0x86: 556, 0x87: 556,
+  0x88: 333, 0x89: 1000, 0x8A: 667, 0x8B: 333, 0x8C: 1000, 0x8E: 611,
+  0x91: 222, 0x92: 222, 0x93: 333, 0x94: 333, 0x95: 350, 0x96: 556, 0x97: 1000,
+  0x98: 333, 0x99: 1000, 0x9A: 500, 0x9B: 333, 0x9C: 944, 0x9E: 500, 0x9F: 667,
+  0xA0: 278, 0xA1: 333, 0xA2: 556, 0xA3: 556, 0xA4: 556, 0xA5: 556, 0xA6: 260,
+  0xA7: 556, 0xA8: 333, 0xA9: 737, 0xAA: 370, 0xAB: 556, 0xAC: 584, 0xAD: 333,
+  0xAE: 737, 0xAF: 333, 0xB0: 400, 0xB1: 584, 0xB2: 333, 0xB3: 333, 0xB4: 333,
+  0xB5: 556, 0xB6: 537, 0xB7: 278, 0xB8: 333, 0xB9: 333, 0xBA: 365, 0xBB: 556,
+  0xBC: 834, 0xBD: 834, 0xBE: 834, 0xBF: 611
+};
 function charW(code, bold) {
-  let w = (code >= 32 && code <= 126) ? HELV[code - 32] : 556;
-  if (code >= 0xC0) w = 600;
+  let w;
+  if (code >= 32 && code <= 126) w = HELV[code - 32];
+  else if (code >= 0xC0) w = 600;
+  else w = HELV_HIGH[code] ?? 556;
   return bold ? w * 1.06 : w;
 }
 export function textWidth(str, size, bold) {

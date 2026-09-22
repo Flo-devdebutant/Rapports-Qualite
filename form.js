@@ -8,7 +8,7 @@
    ------------------------------------------------------------------ */
 
 import { state, shell, groupById, go, back } from './app.js';
-import { local, queue, sync } from './store.js';
+import { local, queue, sync, forgetPhotos } from './store.js';
 import { flatFields, fieldStatus, computeSummary, applyComputed,
          VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { COUNTRIES_FR, countryName } from './countries.js';
@@ -17,13 +17,14 @@ import { pressureConfig, palletStats, lotStats, hasPressures, fmtP,
          refSpec, partnerRef, palletSeverity, refText, outOfZone,
          SEV_COLOR, SEV_LABEL, SEV_STEPS, RANGE_TOL, LIMITS, clampP } from './pressure.js';
 import { pressureChartSVG } from './pressure-chart.js';
-import { reportType, PACKAGING_KINDS, appliesTo } from './report-types.js';
+import { reportType, PACKAGING_KINDS, appliesTo, isHidden, fieldLive } from './report-types.js';
 import { $, $$, esc, icon, toast, confirmSheet, compressImage, stars, pickSheet } from './ui.js';
 import { currentUser, storage } from './supa.js';
 
 let draft = null;          // rapport en cours d'édition
 let dirty = false;
 let resumed = false;       // saisie reprise d'un brouillon
+let paintedCap = null;     // quota de palettes du dernier rendu des pressions
 
 /* Toute modification marque le rapport et programme l'écriture du
    brouillon : c'est ce qui fait qu'on ne perd jamais une saisie. */
@@ -31,6 +32,7 @@ const touch = () => { dirty = true; keepDraft(); };
 
 export async function renderForm({ type, id, fresh = false }) {
   resumed = false;
+  paintedCap = null;        // on change de rapport : rien n'est encore peint
   if (!state.groups.length) {
     return shell('Rapport', `<div class="empty"><div class="big">📦</div>
       <p>Aucun groupe de produit n'est encore défini.<br>
@@ -80,13 +82,16 @@ export async function renderForm({ type, id, fresh = false }) {
   paint();
 }
 
-/* Groupes de produit ouverts à ce type de rapport. Le contrôle
-   production ne concerne que l'avocat et la mangue ; un groupe absent
-   de la base est simplement ignoré. */
+/* Groupes de produit ouverts à ce type de rapport. Un groupe désactivé
+   dans les réglages ne s'offre plus à la saisie — mais le groupe du
+   rapport en cours reste proposé, faute de quoi rouvrir un brouillon
+   changerait son produit sous les doigts de l'inspecteur. */
 function groupChoices(T) {
-  if (!T.groups) return state.groups;
-  const keep = state.groups.filter(g => T.groups.includes(g.id));
-  return keep.length ? keep : state.groups;
+  const live = state.groups.filter(g => g.active !== false || g.id === draft?.product_group_id);
+  const pool = live.length ? live : state.groups;
+  if (!T.groups) return pool;
+  const keep = pool.filter(g => T.groups.includes(g.id));
+  return keep.length ? keep : pool;
 }
 
 function paint() {
@@ -193,7 +198,7 @@ function paint() {
     </details>
 
     ${(group?.config?.sections || [])
-        .filter(sec => appliesTo(sec, draft.type))
+        .filter(sec => !isHidden(sec) && appliesTo(sec, draft.type))
         .map(sec => sectionHtml(sec)).join('')}
 
     <!-- Optionnel : le relevé au pénétromètre, palette par palette.
@@ -266,7 +271,7 @@ function sectionHtml(sec) {
   /* Une section peut ne garder qu'une partie de ses critères selon le
      type de rapport ; le décompte doit suivre, sinon « 0/12 » sur une
      section qui n'en montre que trois. */
-  const fields = (sec.fields || []).filter(f => appliesTo(f, draft.type));
+  const fields = (sec.fields || []).filter(f => fieldLive(sec, f, draft.type));
   if (!fields.length) return '';
   const done = fields.filter(f => draft.measures[f.key] !== undefined && draft.measures[f.key] !== '').length;
   return `<details class="sec"${done ? ' open' : ''} data-sec="${esc(sec.id)}">
@@ -305,7 +310,16 @@ function fieldHtml(f) {
 function wire() {
   const set = (k, v) => { draft.header[k] = v; touch(); };
 
-  $('#fdate').onchange   = (e) => { draft.report_date = new Date(e.target.value).toISOString(); touch(); };
+  /* Un champ date vidé pour être retapé donnait `new Date('')` —
+     `toISOString` levait, et `touch()` n'était jamais atteint : la
+     saisie n'était plus marquée modifiée et le brouillon ne se
+     réécrivait pas. On garde la date précédente le temps que la
+     nouvelle soit complète. */
+  $('#fdate').onchange   = (e) => {
+    const d = new Date(e.target.value);
+    if (!isNaN(d)) draft.report_date = d.toISOString();
+    touch();
+  };
   /* Choisir le client applique sa référence de pression sans autre
      geste — c'est tout l'intérêt du carnet. La saisie manuelle garde
      toujours la priorité, et un client sans référence enregistrée
@@ -390,7 +404,11 @@ function wire() {
     e.target.value = '';
     for (const file of files) {
       if (draft.photos.length >= 12) { toast('12 photos maximum', 'err'); break; }
-      const blob = await compressImage(file);
+      /* Une photo illisible ne doit pas partir en silence : elle
+         finirait dans un PDF client sous forme de page blanche. */
+      let blob;
+      try { blob = await compressImage(file); }
+      catch (e) { toast(e.message, 'err'); continue; }
       const localId = crypto.randomUUID();
       await local.put('photos', { id: localId, blob });
       draft.photos.push({ localId, path: `${draft.id}/${localId}.jpg`, uploaded: false, at: Date.now() });
@@ -406,6 +424,10 @@ function wire() {
     if (!(await confirmSheet('Repartir de zéro',
           'Le brouillon en cours sera supprimé et le formulaire repart vide.', { okLabel: 'Repartir' }))) return;
     const id = draft.id, type = draft.type;
+    /* Les photos partent avec le brouillon : sans cela, leurs binaires
+       restaient en base locale jusqu'à une synchronisation réussie qui
+       n'arrive jamais sur un appareil durablement hors réseau. */
+    await forgetPhotos((draft.photos || []).map(p => p.localId));
     await local.del('reports', id);
     dirty = false; draft = null;
     renderForm({ type, fresh: true });
@@ -481,8 +503,10 @@ function paintCalibres() {
     row.querySelector('[data-pick="c"]').onclick = () => pickLotCalibre(i);
     row.querySelectorAll('[data-f]').forEach(inp => {
       const f = inp.dataset.f;
+      /* Origine et calibre passent par le sélecteur cherchable : les
+         seuls champs câblés ici sont numériques. */
       const handler = () => {
-        rows[i][f] = (f === 'c' || f === 'o') ? inp.value : (inp.value === '' ? '' : Number(inp.value));
+        rows[i][f] = inp.value === '' ? '' : Number(inp.value);
         touch();
         syncCalibreTotals();
       };
@@ -516,8 +540,14 @@ function syncCalibreTotals() {
   const hasPal = rows.some(r => r.pal !== '' && r.pal != null);
   const hasCol = rows.some(r => r.col !== '' && r.col != null);
 
+  /* Le total suit les lignes dans les deux sens : effacer la dernière
+     ligne qui annonçait des palettes doit effacer le total, sinon la
+     Palettisation continuait d'afficher 4 palettes pour un détail de
+     lot devenu vide. */
   if (hasPal) draft.measures.pal_count = Math.round(sum('pal') * 100) / 100;
+  else delete draft.measures.pal_count;
   if (hasCol) draft.measures.col_count = sum('col');
+  else delete draft.measures.col_count;
 
   const hint = $('#calSum');
   if (hint) {
@@ -532,9 +562,22 @@ function syncCalibreTotals() {
      qui ne sont pas des champs « calculés » du catalogue. */
   for (const key of ['pal_count', 'col_count']) {
     const inp = document.querySelector(`.crit[data-key="${key}"] input`);
-    if (inp && draft.measures[key] !== undefined) inp.value = draft.measures[key] ?? '';
+    if (inp) inp.value = draft.measures[key] ?? '';
   }
-  if (hasPal || hasCol) refresh('pal_count');
+  refresh('pal_count');
+
+  /* Le quota de palettes vient d'ici : quand il bouge, c'est toute la
+     section « contrôle par palette » qui doit se remettre à jour —
+     plafond du bouton « Palette », calibres proposés, décompte des
+     restantes et avertissement de dépassement. Ne rafraîchir que le
+     nombre attendu laissait passer un rapport contrôlant 4 palettes
+     pour 2 annoncées, sans le moindre signal. */
+  /* On compare au quota qui a servi au DERNIER rendu, pas à une valeur
+     relue à l'instant : le gestionnaire de saisie a déjà écrit dans le
+     détail du lot avant d'arriver ici, si bien qu'une comparaison
+     recalculée trouvait toujours les deux valeurs identiques et ne
+     rafraîchissait jamais rien. */
+  if (palletCap() !== paintedCap && draft.header.pressures?.pallets?.length) paintPressures();
   const exp = document.getElementById('prExp');
   if (exp) exp.textContent = String(Math.max(1, Math.round(Number(draft.measures.pal_count) || 0)));
 }
@@ -557,7 +600,7 @@ function refresh(changedKey) {
     const id = sec.dataset.sec;
     const def = group.config.sections.find(s => s.id === id);
     if (def) {
-      const fs = (def.fields || []).filter(f => appliesTo(f, draft.type));
+      const fs = (def.fields || []).filter(f => fieldLive(def, f, draft.type));
       sec.querySelector('.count').textContent =
         `${fs.filter(f => draft.measures[f.key] !== undefined && draft.measures[f.key] !== '').length}/${fs.length}`;
     }
@@ -575,9 +618,20 @@ function refreshVerdict() {
   if (box) box.innerHTML = verdictHtml(draft.summary);
 }
 
+/* `paintPhotos` attend la base locale et les liens signés : deux appels
+   rapprochés (ajout pendant que les vignettes arrivent) s'entrelaçaient
+   et doublaient les cases. Un jeton de génération fait abandonner le
+   rendu périmé. Et les URL d'objet créées au rendu précédent sont
+   libérées : sans cela, chaque repeinte épinglait une douzaine de
+   fichiers de 200 ko en mémoire jusqu'au rechargement de la page. */
+let photoPaint = 0;
+let photoUrls = [];
 async function paintPhotos() {
   const grid = $('#photos');
   if (!grid) return;
+  const me = ++photoPaint;
+  for (const u of photoUrls) URL.revokeObjectURL(u);
+  photoUrls = [];
   grid.innerHTML = '';
   for (const [i, p] of draft.photos.entries()) {
     const cell = document.createElement('div');
@@ -587,11 +641,20 @@ async function paintPhotos() {
     const rec = p.localId ? await local.get('photos', p.localId) : null;
     const src = rec ? URL.createObjectURL(rec.blob)
                     : (p.uploaded ? (await storage.signedUrl(p.path)) || '' : '');
-    cell.innerHTML = `<img alt="Photo ${i + 1}" src="${src}"><button type="button" aria-label="Supprimer">×</button>`;
+    if (me !== photoPaint) { if (rec) URL.revokeObjectURL(src); return; }
+    if (rec) photoUrls.push(src);
+    cell.innerHTML = `<img alt="Photo ${i + 1}" src="${src}"${
+      src ? '' : ' hidden'}><button type="button" aria-label="Supprimer">×</button>`;
+    if (!src) cell.insertAdjacentHTML('afterbegin', '<span class="ph-miss">indisponible hors ligne</span>');
     cell.querySelector('button').onclick = async () => {
       if (!(await confirmSheet('Supprimer la photo', 'Cette photo sera retirée du rapport.'))) return;
+      /* Suppression par identité, pas par l'indice capturé au rendu :
+         entre-temps une autre photo a pu être ajoutée ou retirée, et
+         l'indice désignait alors la mauvaise. */
+      const at = draft.photos.indexOf(p);
+      if (at < 0) return;
       if (p.localId) await local.del('photos', p.localId);
-      draft.photos.splice(i, 1); touch(); paintPhotos();
+      draft.photos.splice(at, 1); touch(); paintPhotos();
     };
     grid.appendChild(cell);
   }
@@ -628,20 +691,37 @@ export async function allDrafts() {
 /* Écriture silencieuse, sans bloquer la frappe : on rassemble les
    sauvegardes rapprochées. */
 let saveTimer = null;
+/* L'écriture du brouillon est LE mécanisme qui garantit qu'on ne perd
+   jamais une saisie. L'avaler en silence, c'était afficher « saisie
+   enregistrée automatiquement » à un inspecteur dont rien n'était
+   enregistré — quarante minutes de relevés perdues sans un mot. Le
+   premier échec est donc annoncé ; les suivants ne harcèlent pas. */
+let draftFailed = false;
+async function writeDraft() {
+  try {
+    await local.put('reports', { ...draft, _draftAt: Date.now() });
+    if (draftFailed) { draftFailed = false; toast('Brouillon de nouveau enregistré'); }
+    return true;
+  } catch (e) {
+    if (!draftFailed) {
+      draftFailed = true;
+      toast('Brouillon non enregistré — mémoire de l\'appareil saturée', 'err', { ms: 6000 });
+    }
+    return false;
+  }
+}
+
 function keepDraft() {
   if (!draft || !draft._draft) return;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(async () => {
-    if (!draft || !draft._draft) return;
-    try { await local.put('reports', { ...draft, _draftAt: Date.now() }); } catch {}
-  }, 600);
+  saveTimer = setTimeout(() => { if (draft?._draft) writeDraft(); }, 600);
 }
 
 async function keepDraftNow() {
   clearTimeout(saveTimer);
-  if (!draft || !draft._draft) return;
-  if (!dirty && !draft._draftAt) return;
-  try { await local.put('reports', { ...draft, _draftAt: Date.now() }); } catch {}
+  if (!draft || !draft._draft) return true;
+  if (!dirty && !draft._draftAt) return true;
+  return writeDraft();
 }
 
 /* ----------------------------- sauvegarde ----------------------------- */
@@ -658,8 +738,12 @@ async function save() {
     draft.header.origins = [...new Set(cals.map(r => (r.o || '').toUpperCase().trim()).filter(Boolean))];
     draft.header.origin  = draft.header.origins.join(', ');
 
-    // Un bloc de pressions vide ne part pas en base.
-    if (draft.header.pressures && !lotStats(draft.header.pressures)) delete draft.header.pressures;
+    /* Un bloc de pressions vide ne part pas en base — mais « vide »
+       veut dire sans PRESSION ET sans POIDS. `lotStats` seul ignore la
+       colonne des pesées : un contrôle production où l'on a pesé cinq
+       fruits sur trois palettes sans sortir le pénétromètre perdait
+       palettes, calibres et poids à l'enregistrement. */
+    if (draft.header.pressures && !hasPressures(draft.header)) delete draft.header.pressures;
 
     const group = groupById(draft.product_group_id);
     draft.measures = applyComputed(group, draft.measures);
@@ -679,10 +763,23 @@ async function save() {
       draft.header.carrier = c.name;
     }
 
-    delete draft._draft;            // validé : il rejoint le flux de l'équipe
-    delete draft._draftAt;
-    draft._dirty = true;            // à pousser au serveur
-    await local.put('reports', draft);
+    /* Le drapeau de brouillon ne tombe qu'une fois l'écriture réussie.
+       L'enlever avant, c'était se retrouver — si la base locale
+       refusait l'écriture, disque plein par exemple — avec un rapport
+       ni enregistré NI en brouillon : plus rien ne le réécrivait, et
+       quitter l'écran proposait de « perdre les modifications » d'une
+       saisie qui n'existait nulle part. */
+    const wasDraft = draft._draft, wasDraftAt = draft._draftAt;
+    const row = { ...draft, _dirty: true };
+    delete row._draft; delete row._draftAt;
+    try {
+      await local.put('reports', row);
+    } catch (e) {
+      if (wasDraft) { draft._draft = wasDraft; draft._draftAt = wasDraftAt; }
+      throw e;
+    }
+    draft = row;                    // validé : il rejoint le flux de l'équipe
+
     await queue('report', { id: draft.id });
     await local.meta('lastForm', { product_group_id: draft.product_group_id, department: draft.header.department });
 
@@ -691,7 +788,7 @@ async function save() {
     toast(navigator.onLine ? 'Rapport enregistré' : 'Enregistré — envoi au retour du réseau');
     go('#/report/' + draft.id);
   } catch (e) {
-    toast(e.message, 'err');
+    toast(e.message || 'Enregistrement impossible', 'err');
     btn.disabled = false; btn.textContent = 'Enregistrer';
   }
 }
@@ -705,7 +802,12 @@ function pressures() {
   const p = draft.header.pressures;
   if (!p.pallets.length) { p.fruits = cfg.fruits; p.sides = cfg.sides; p.unit = cfg.unit; }
   if (!p.mode) p.mode = 'target';
-  if (p.mode === 'target' && p.ref == null) p.ref = cfg.ref;
+  /* Le repli sur la référence du produit ne vaut qu'à la CRÉATION du
+     bloc. Le réappliquer à chaque passage remettait 13 dans un champ
+     que l'inspecteur venait d'effacer, tout en l'étiquetant « ajustée
+     à la main » — une valeur que personne n'avait saisie, présentée
+     comme une décision humaine. */
+  if (p.mode === 'target' && p.ref == null && p.refSource !== 'manuel') p.ref = cfg.ref;
   applyClientRef();
   return p;
 }
@@ -744,7 +846,7 @@ function applyClientRef({ force = false } = {}) {
                        refSource: 'produit', refClient: '' });
     return true;
   }
-  const before = JSON.stringify([p.mode, p.ref, p.rmin, p.rmax]);
+  const before = JSON.stringify([p.mode, p.ref, p.rmin, p.rmax, p.refSource, p.refClient]);
   if (hit.mode === 'range') Object.assign(p, { mode: 'range', rmin: hit.min, rmax: hit.max });
   else Object.assign(p, { mode: 'target', ref: hit.ref });
   p.refSource = 'client';
@@ -754,7 +856,10 @@ function applyClientRef({ force = false } = {}) {
      permet de vérifier que c'est bien la bonne ligne qui s'applique. */
   p.refScope = refScopeText(hit);
   p.refPack = hit.packaging || '';
-  return before !== JSON.stringify([p.mode, p.ref, p.rmin, p.rmax]) || true;
+  /* Le `|| true` qui traînait ici rendait la comparaison décorative :
+     chaque frappe dans le champ client reconstruisait toute la grille
+     des pressions, champ en cours de saisie compris. */
+  return before !== JSON.stringify([p.mode, p.ref, p.rmin, p.rmax, p.refSource, p.refClient]);
 }
 
 /* D'où vient la référence affichée, et comment revenir à celle du
@@ -768,9 +873,12 @@ function refSourceHtml(p) {
   const hit = clientSpec();
   if (p.refSource === 'client')
     return `D'après le carnet — ${esc(p.refClient || '')}${p.refScope ? ` · ${esc(p.refScope)}` : ''}.`;
-  const back = hit
-    ? ` <button type="button" class="linkish" id="prRefBack">${
-        p.refSource === 'manuel' ? 'Reprendre celle du client' : 'Appliquer celle du client'}</button>`
+  /* Quand une référence client existe, `applyClientRef` l'a déjà posée
+     avant ce rendu, sauf si le contrôleur l'a écartée à la main : le
+     seul libellé atteignable est donc « Reprendre celle du client ».
+     L'autre branche promettait un bouton que personne n'a jamais vu. */
+  const back = hit && p.refSource === 'manuel'
+    ? ` <button type="button" class="linkish" id="prRefBack">Reprendre celle du client</button>`
     : '';
   return (p.refSource === 'manuel' ? 'Ajustée à la main pour ce rapport.' : 'Valeur par défaut du produit.') + back;
 }
@@ -836,8 +944,25 @@ function paintPressures() {
   const n = slots(p);
   /* Le nombre de palettes est lu au moment du clic, pas au rendu : la
      section Palettisation est souvent remplie après cette section. */
+  /* Numérotation : on repart du plus grand numéro existant, pas de la
+     longueur du tableau. Supprimer la palette 2 puis en ajouter une
+     donnait deux palettes « 3 » — indiscernables dans le tableau du
+     PDF, et dont les non-conformités se télescopaient dans le
+     verdict. */
+  const nextPalletName = (p) => {
+    const max = (p.pallets || []).reduce((m, x) => {
+      const v = parseInt(String(x.n ?? ''), 10);
+      return isFinite(v) ? Math.max(m, v) : m;
+    }, 0);
+    return String(Math.max(max, p.pallets.length) + 1);
+  };
+
   const expected = () => Math.max(1, palletCap() || Math.round(Number(draft.measures.pal_count) || 0));
   const cap = palletCap();
+  /* Mémorisé pour que le détail du lot sache si la section affichée
+     est encore à jour : le quota saisi plus haut commande le plafond,
+     les calibres proposés et l'avertissement de dépassement. */
+  paintedCap = cap;
   const full = cap > 0 && p.pallets.length >= cap;
 
   const T = reportType(draft.type);
@@ -870,26 +995,42 @@ function paintPressures() {
     `<p class="muted" style="margin:0">Aucune pression saisie. « Tout à ${fmtP(fillAt).replace('.0','')} »
      crée <span id="prExp">${expected()}</span> palette(s) d'après le nombre saisi en Palettisation.</p>`;
 
+  /* Remplissage rapide : il COMPLÈTE, il n'écrase pas. Une main qui
+     cherche « Palette » trouve parfois « Tout à 13 » juste à côté, et
+     dix relevés déjà saisis ne doivent pas disparaître sur une fausse
+     manœuvre. Ce qui est mesuré reste ; seules les cases vides se
+     remplissent. */
   $('#prFill').onclick = () => {
     const ref = fillValue(p, cfg);
     const count = p.pallets.length || expected();
     /* On respecte la répartition annoncée : deux palettes en 18, une
        en 20, une en 22 donnent exactement ces quatre palettes-là. */
     const spread = calibreSpread(count);
-    p.pallets = Array.from({ length: count }, (_, i) => ({
-      n: p.pallets[i]?.n ?? String(i + 1),
-      cal: p.pallets[i]?.cal ?? spread[i] ?? '',
-      v: Array.from({ length: n }, () => ref),
-      w: p.pallets[i]?.w ?? Array.from({ length: p.fruits }, () => '')
-    }));
+    let filled = 0;
+    p.pallets = Array.from({ length: count }, (_, i) => {
+      const old = p.pallets[i];
+      const v = Array.from({ length: n }, (_, k) => {
+        const cur = old?.v?.[k];
+        if (cur !== '' && cur != null) return cur;
+        filled++; return ref;
+      });
+      return {
+        n: old?.n ?? String(i + 1),
+        cal: old?.cal ?? spread[i] ?? '',
+        v,
+        w: old?.w ?? Array.from({ length: p.fruits }, () => '')
+      };
+    });
     touch(); paintPressures();
-    toast(`${count} palette${count > 1 ? 's' : ''} à ${fmtP(ref).replace('.0', '')} ${p.unit || 'kg'}`);
+    toast(filled
+      ? `${filled} relevé${filled > 1 ? 's' : ''} complété${filled > 1 ? 's' : ''} à ${fmtP(ref).replace('.0', '')} ${p.unit || 'kg'}`
+      : 'Tous les relevés étaient déjà saisis — rien n\'a été modifié');
   };
   $('#prAdd').onclick = () => {
     if (palletCap() && p.pallets.length >= palletCap())
       return toast(`Le lot n'annonce que ${palletCap()} palettes.`, 'err');
     p.pallets.push({
-      n: String(p.pallets.length + 1), cal: defaultCalibre(),
+      n: nextPalletName(p), cal: defaultCalibre(),
       v: Array.from({ length: n }, () => ''),
       w: Array.from({ length: p.fruits }, () => '')
     });
@@ -901,19 +1042,33 @@ function paintPressures() {
     p.pallets = []; touch(); paintPressures();
   };
 
+  /* Sur un clavier d'ordinateur, Entrée ne fait rien dans un champ
+     isolé : on lui donne le même effet que « Suivant » sur un
+     téléphone, pour que la saisie se fasse d'une seule main. */
+  const measures = () => [...list.querySelectorAll('input[data-v],input[data-w]')];
+  list.onkeydown = (e) => {
+    if (e.key !== 'Enter' || !e.target.matches('input[data-v],input[data-w]')) return;
+    e.preventDefault();
+    const all = measures();
+    const next = all[all.indexOf(e.target) + 1];
+    if (next) { next.focus(); next.select?.(); }
+    else e.target.blur();
+  };
+
   list.querySelectorAll('.pal').forEach(card => {
     const i = +card.dataset.i;
     card.querySelector('[data-n]').oninput = (e) => { p.pallets[i].n = e.target.value; touch(); };
     const calSel = card.querySelector('[data-cal]');
     if (calSel) calSel.onchange = () => {
-      /* L'option porte le reste entre parenthèses : on ne garde que le
-         calibre lui-même. */
-      p.pallets[i].cal = calSel.value.replace(/\s*\(\d+ restantes?\)$/, '');
+      p.pallets[i].cal = calSel.value;
       touch(); paintPressures();
     };
     card.querySelectorAll('[data-w]').forEach(inp => inp.oninput = () => {
       const k = +inp.dataset.w;
-      p.pallets[i].w[k] = inp.value === '' ? '' : Number(inp.value);
+      /* Une palette héritée d'une version antérieure à la colonne des
+         poids n'a pas de tableau `w` : on le crée plutôt que de lever
+         au premier chiffre tapé. */
+      (p.pallets[i].w ||= [])[k] = inp.value === '' ? '' : Number(inp.value);
       const min = calibreMin(groupById(draft.product_group_id), p.pallets[i].cal);
       inp.classList.toggle('off', inp.value !== '' && min != null && Number(inp.value) < min);
       touch();
@@ -931,7 +1086,13 @@ function paintPressures() {
       };
       inp.oninput = () => {
       const k = +inp.dataset.v;
-      p.pallets[i].v[k] = inp.value === '' ? '' : Number(inp.value);
+      /* Le modèle est borné dès la frappe, pas seulement au `blur` :
+         sur un téléphone, on peut enregistrer sans jamais quitter le
+         dernier champ, et une valeur hors mesure donnait alors une
+         moyenne à l'écran (bornée) différente de celle du PDF (brute)
+         pour la même palette. L'affichage, lui, reste libre le temps
+         de finir de taper. */
+      p.pallets[i].v[k] = inp.value === '' ? '' : (clampP(inp.value) ?? '');
       /* Un fruit qui s'écarte nettement de la zone acceptée se signale
          de lui-même pendant la saisie. Ce n'est qu'un repère visuel :
          la gravité, elle, ne se calcule que sur la moyenne. */
@@ -1090,9 +1251,23 @@ const palletCap = () => { const { total, declared } = lotQuota(); return declare
 function overText() {
   const over = [...calibreRemaining()].filter(([, n]) => n < 0)
     .map(([c, n]) => `${-n} de trop en ${c}`);
-  if (!over.length) return '';
-  return `Le détail du lot n'annonce pas autant de palettes : ${over.join(', ')}. ` +
-         `Corrigez le détail du lot, ou le calibre d'une palette.`;
+  if (over.length)
+    return `Le détail du lot n'annonce pas autant de palettes : ${over.join(', ')}. ` +
+           `Corrigez le détail du lot, ou le calibre d'une palette.`;
+
+  /* Sur un rapport de réception, les palettes n'ont pas de calibre
+     propre : le décompte par calibre ne peut alors rien signaler, et
+     réduire le nombre annoncé après coup passait complètement
+     inaperçu. On compare donc aussi les totaux. */
+  const cap = palletCap();
+  const done = draft.header.pressures?.pallets?.length || 0;
+  if (cap && done > cap) {
+    const d = done - cap;
+    return `Le détail du lot n'annonce que ${cap} palette${cap > 1 ? 's' : ''}, ` +
+           `mais ${done} sont contrôlées : ${d} de trop. ` +
+           `Corrigez le détail du lot, ou retirez ${d === 1 ? 'une palette' : `${d} palettes`} du contrôle.`;
+  }
+  return '';
 }
 
 /* « 1 × 18, 1 × 22 » — ce qu'il reste à contrôler, dit en clair. */
@@ -1139,25 +1314,39 @@ function palletHtml(pal, i, p) {
              inspecteur qui commence par les 20 doit pouvoir le dire,
              même si le reste est déjà réparti. L'écart éventuel avec
              le lot est signalé juste en dessous. */
+          /* Le calibre voyage dans `value`, jamais dans le texte : le
+             reconstruire depuis le libellé cassait dès qu'un lot
+             annonçait « 1,5 palette » — le calibre enregistré devenait
+             littéralement « 18 (1.5 restantes) ». */
           const n = left.has(c) ? left.get(c) : null;
-          return `<option${c === pal.cal ? ' selected' : ''}>${
-            esc(c)}${n != null ? ` (${Math.max(0, n)} restante${n > 1 ? 's' : ''})` : ''}</option>`;
+          const r = n == null ? null : Math.max(0, Math.round(n * 100) / 100);
+          return `<option value="${esc(c)}"${c === pal.cal ? ' selected' : ''}>${
+            esc(c)}${r != null ? ` (${r} restante${r > 1 ? 's' : ''})` : ''}</option>`;
         }).join('')}
+        ${pal.cal && !opts.includes(pal.cal)
+          ? `<option value="${esc(pal.cal)}" selected>${esc(pal.cal)}</option>` : ''}
       </select></span>` : ''}
       <span class="avg">${resumeHtml(st, wst, sp, p)}</span>
       <button type="button" class="icon-btn" data-del aria-label="Retirer la palette">${icon('x')}</button>
     </div>
 
-    <div class="pal-cap">Pression (${esc(p.unit || 'kg')})</div>
+    <!-- Les champs sont écrits fruit par fruit — les deux joues du
+         fruit 1, puis celles du fruit 2 — et replacés dans la grille
+         par leurs coordonnées. C'est l'ordre du geste réel : on
+         retourne le fruit, on repique, on passe au suivant. Écrits
+         ligne par ligne, « Suivant » sautait d'un fruit à l'autre
+         sans finir le premier. -->
     <div class="pal-grid" style="grid-template-columns:repeat(${p.fruits},minmax(0,1fr))">
-      ${Array.from({ length: p.fruits }, (_, f) => `<span class="fh">F${f + 1}</span>`).join('')}
-      ${Array.from({ length: p.sides }, (_, sd) =>
-        Array.from({ length: p.fruits }, (_, f) => {
+      ${Array.from({ length: p.fruits }, (_, f) =>
+        `<span class="fh" style="grid-column:${f + 1};grid-row:1">F${f + 1}</span>`).join('')}
+      ${Array.from({ length: p.fruits }, (_, f) =>
+        Array.from({ length: p.sides }, (_, sd) => {
           const k = f * p.sides + sd;
           const v = pal.v?.[k];
           const off = v !== '' && v != null && outOfZone(v, sp) > OUTLIER;
           return `<input type="number" inputmode="decimal" step="0.1" data-v="${k}"
-            min="${LIMITS.min}" max="${LIMITS.max}"
+            min="${LIMITS.min}" max="${LIMITS.max}" enterkeyhint="next"
+            style="grid-column:${f + 1};grid-row:${sd + 2}"
             class="${off ? 'off' : ''}" value="${v ?? ''}" aria-label="Fruit ${f + 1} mesure ${sd + 1}">`;
         }).join('')).join('')}
     </div>
@@ -1169,6 +1358,7 @@ function palletHtml(pal, i, p) {
         const v = pal.w?.[f];
         const off = v !== '' && v != null && min != null && Number(v) < min;
         return `<input type="number" inputmode="numeric" step="1" data-w="${f}"
+          min="0" enterkeyhint="next"
           class="${off ? 'off' : ''}" value="${v ?? ''}" aria-label="Poids du fruit ${f + 1}">`;
       }).join('')}
     </div>` : ''}
@@ -1251,13 +1441,17 @@ async function leave() {
      elles ne le sont plus, le brouillon reste. Sur la modification
      d'un rapport déjà enregistré, en revanche, il n'y a pas de
      brouillon où se replier — la question garde tout son sens. */
-  await keepDraftNow();
+  const written = await keepDraftNow();
   const isDraft = !!draft?._draft;
-  if (!isDraft && dirty && !(await confirmSheet(
+  /* Si le brouillon n'a PAS pu être écrit, la sortie n'est plus sans
+     conséquence : on pose la même question que sur un rapport déjà
+     enregistré, plutôt que de promettre une reprise qui n'existe pas. */
+  if (dirty && (!isDraft || !written) && !(await confirmSheet(
         'Quitter sans enregistrer',
-        'Ce rapport est déjà enregistré : les modifications en cours seront perdues.',
+        isDraft ? 'Le brouillon n\'a pas pu être enregistré sur cet appareil : la saisie en cours sera perdue.'
+                : 'Ce rapport est déjà enregistré : les modifications en cours seront perdues.',
         { okLabel: 'Quitter' }))) return;
-  const kept = dirty && isDraft;
+  const kept = dirty && isDraft && written;
   dirty = false;
   back('#/');
   if (kept) toast('Brouillon conservé — reprenez quand vous voulez', '', { ms: 4000 });

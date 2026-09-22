@@ -1,13 +1,15 @@
 /* Réglages : produits & critères, partenaires, équipe, compte. */
 
 import { state, shell, go, back, loadRefs, logout } from './app.js';
-import { local, queue, sync } from './store.js';
+import { local, queue, sync, pendingCount } from './store.js';
 import { db, auth } from './supa.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
-import { fieldStatus } from './verdict.js';
+import { fieldStatus, FIELD_ROLES, fieldRole, effSeverity } from './verdict.js';
+import { allDrafts } from './form.js';
 import { LANGS, builtinTranslation } from './report-pdf.js';
 import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS, LIMITS, clampP } from './pressure.js';
-import { PACKAGING_KINDS, TYPE_LIST, reportType, appliesTo, typesLabel } from './report-types.js';
+import { PACKAGING_KINDS, TYPE_LIST, TYPE_IDS, reportType, appliesTo, typesLabel,
+         isHidden, fieldLive, normalizeSections } from './report-types.js';
 import { $, $$, esc, icon, toast, sheet, confirmSheet, getTheme, setTheme } from './ui.js';
 
 const isAdmin = () => state.profile?.role === 'admin';
@@ -86,22 +88,33 @@ function i18nBlock(label, i18n) {
 /* Portée : à quels types de rapport s'applique cette section ou ce
    critère. Aucun coché = tous, ce qui est le cas courant et évite
    d'avoir à cocher trois cases pour chaque nouveau critère. */
-function typesBlock(item) {
+/* `parent` borne le choix : un critère ne peut pas s'appliquer à un
+   type de rapport que sa section exclut. Sans cette borne, on pouvait
+   enregistrer un critère « Production seulement » dans une section
+   « Réception, Expédition » — une combinaison qui n'apparaît dans aucun
+   rapport, et qu'aucun écran ne signalait. */
+function typesBlock(item, parent) {
   const sel = Array.isArray(item?.types) ? item.types : [];
+  const scope = Array.isArray(parent?.types) && parent.types.length ? parent.types : null;
+  const list = scope ? TYPE_LIST.filter(T => scope.includes(T.id)) : TYPE_LIST;
   return `<div class="field"><label>Types de rapport concernés</label>
-    <div class="tgrid" id="typesBox">
-      ${TYPE_LIST.map(T => `<button type="button" class="tbtn" data-t="${T.id}"
+    <div class="tgrid" id="typesBox" data-scope="${esc((scope || []).join(','))}">
+      ${list.map(T => `<button type="button" class="tbtn" data-t="${T.id}"
         aria-pressed="${sel.includes(T.id)}">${esc(T.short)}</button>`).join('')}
     </div>
-    <div class="hint">Aucun coché : le critère s'applique aux trois types de rapport.</div></div>`;
+    <div class="hint">Aucun coché : ${scope
+      ? `le critère suit sa section (${esc(scope.map(t => reportType(t).short).join(', '))}).`
+      : "le critère s'applique aux trois types de rapport."}</div></div>`;
 }
 
 const readTypes = (el) => {
-  const on = [...el.querySelectorAll('#typesBox .tbtn')]
-    .filter(b => b.getAttribute('aria-pressed') === 'true').map(b => b.dataset.t);
-  /* Les trois cochés, c'est « tous » : on n'enregistre rien, la grille
-     reste ainsi valable si un quatrième type apparaît un jour. */
-  return on.length && on.length < TYPE_LIST.length ? on : undefined;
+  const box = el.querySelector('#typesBox');
+  const all = [...(box?.querySelectorAll('.tbtn') || [])];
+  const on = all.filter(b => b.getAttribute('aria-pressed') === 'true').map(b => b.dataset.t);
+  /* Tous cochés, c'est « tous » : on n'enregistre rien, la grille reste
+     ainsi valable si un quatrième type apparaît un jour — et le critère
+     continue de suivre sa section si celle-ci se déplace. */
+  return on.length && on.length < all.length ? on : undefined;
 };
 
 const wireTypes = (el) => el.querySelectorAll('#typesBox .tbtn').forEach(b =>
@@ -127,11 +140,11 @@ export function renderGroups() {
       Tout y est modifiable, et chaque modification peut être annulée juste après.</p>
     </div>
     <div class="list">
-      ${state.groups.map(g => `
+      ${[...state.groups].sort((a, b) => (a.active === false) - (b.active === false)).map(g => `
         <button class="rep" data-id="${esc(g.id)}">
-          <div class="rep-top"><b>${esc(g.config?.icon || '')} ${esc(g.name)}</b>${g.active ? '' : '<span class="pill">inactif</span>'}</div>
+          <div class="rep-top"><b>${esc(g.config?.icon || '')} ${esc(g.name)}</b>${g.active === false ? '<span class="pill">supprimé</span>' : ''}</div>
           <div class="rep-meta"><span>${(g.config?.sections || []).length} sections</span>
-            <span>${(g.config?.sections || []).reduce((n, s) => n + s.fields.length, 0)} critères</span>
+            <span>${(g.config?.sections || []).reduce((n, s) => n + (s.fields || []).length, 0)} critères</span>
             <span>tolérance ${g.config?.tolerance ?? 10} %</span></div>
         </button>`).join('') || '<div class="empty"><div class="big">📦</div><p>Aucun groupe de produit.</p></div>'}
     </div>
@@ -145,10 +158,18 @@ export function renderGroups() {
         $('#add').onclick = addGroup;
         $('#restore').onclick = async () => {
           if (!(await confirmSheet('Restaurer', 'Les grilles Avocat, Mangue et Fruits & légumes seront remises à leur état d\'origine. Les autres groupes ne sont pas touchés.', { okLabel: 'Restaurer', danger: false }))) return;
-          await db('product_groups').upsert(DEFAULT_GROUPS.map(g => ({
-            id: g.id, name: g.name, position: g.position, active: true, config: { ...g.config, icon: g.icon }
-          })));
-          await sync(); await loadRefs(); renderGroups(); toast('Grilles restaurées');
+          /* Même chemin que n'importe quelle autre écriture : local
+             d'abord, file d'attente ensuite. L'appel direct au serveur
+             échouait en silence hors ligne. */
+          for (const d of DEFAULT_GROUPS) {
+            const row = { id: d.id, name: d.name, position: d.position, active: true,
+                          config: { ...structuredClone(d.config), icon: d.icon } };
+            await local.put('groups', row);
+            await queue('group', row);
+          }
+          const ok = await sync({ silent: true });
+          toast(ok ? 'Grilles restaurées' : 'Grilles restaurées · envoi à la reconnexion');
+          await loadRefs(); renderGroups();
         };
       } });
 }
@@ -183,12 +204,62 @@ function addGroup() {
 }
 
 /* Type de rapport sélectionné dans l'éditeur de grille. Gardé hors de
-   la fonction pour survivre au redessin après chaque modification. */
+   la fonction pour survivre au redessin après chaque modification —
+   mais remis à zéro dès qu'on change de produit, sinon on ouvre la
+   grille de la mangue filtrée sur un type choisi pour l'avocat, et les
+   critères créés là héritent d'une restriction que personne n'a
+   demandée. */
 let gridType = '';
+let gridTypeOwner = '';
 
-export function renderGroupEditor(id) {
+/* Visible dans la vue courante de l'éditeur. En vue « Tous les
+   rapports », seul le masquage compte ; dans une vue filtrée, la portée
+   s'y ajoute. */
+const secLive = (sec) => !isHidden(sec) && appliesTo(sec, gridType);
+
+/* L'étiquette qui dit POURQUOI un élément est grisé. Sans elle, on voit
+   qu'il ne s'affichera pas sans savoir où agir — sur le critère ou sur
+   sa section. */
+function scopePill(item, live, sec) {
+  if (isHidden(item)) return '<span class="pill sm">masqué</span>';
+  const own = typesLabel(item);
+  if (own) return `<span class="pill sm">${esc(own)}</span>`;
+  if (!live) return `<span class="pill sm">${sec ? 'section masquée' : 'masquée ici'}</span>`;
+  return '';
+}
+
+/* Après un redessin, on rouvre la section sur laquelle on travaillait :
+   déplacer un critère d'un cran ne doit pas refermer la grille et
+   renvoyer en haut de page. */
+function openSection(si) {
+  const d = document.querySelector(`details.sec[data-si="${si}"]`);
+  if (!d) return;
+  d.open = true;
+  d.scrollIntoView({ block: 'nearest' });
+}
+
+const weightsHtml = (cfg) => (cfg.calibres || []).map(c => `
+  <div class="wrow">
+    <label for="w_${slug(c)}">${esc(c)}</label>
+    <span><input type="number" id="w_${slug(c)}" data-cal="${esc(c)}" min="0" step="1"
+      value="${(cfg.calibreWeights || {})[c] ?? ''}" placeholder="—"><i>g</i></span>
+  </div>`).join('') || '<p class="muted" style="margin:0">Définissez d\'abord les calibres ci-dessus.</p>';
+
+/* `fresh` : on arrive sur l'écran par la navigation, pas par un simple
+   redessin. Le filtre de type repart alors de « Tous les rapports ».
+   Le garder d'une visite à l'autre était piégeux : on revenait sur la
+   grille une heure plus tard, toujours filtrée sur Production sans le
+   remarquer, et chaque masquage ne valait discrètement que pour ce
+   type-là. */
+export function renderGroupEditor(id, fresh = false) {
   const g = state.groups.find(x => x.id === id);
   if (!g) { toast('Groupe introuvable', 'err'); return go('#/settings/groups'); }
+  if (fresh || gridTypeOwner !== id) { gridType = ''; gridTypeOwner = id; }
+  /* Remise d'aplomb : une grille où la portée d'un critère sortait de
+     celle de sa section produisait une section présente dans aucun
+     rapport. La lecture s'en accommode déjà, mais on l'écrit une bonne
+     fois pour que le réglage affiché soit celui qui s'applique. */
+  if (normalizeSections(g.config?.sections)) saveGroup(g).catch(() => {});
   const cfg = g.config || {};
   const pr = pressureConfig(g);
 
@@ -229,14 +300,7 @@ export function renderGroupEditor(id) {
       <p class="muted" style="margin:0 0 12px">Au contrôle production, un fruit pesé sous ce seuil
       est signalé comme sous-calibré. Laissez vide pour ne rien contrôler sur ce calibre.
       Le poids maximum n'est pas vérifié : un fruit plus gros profite au client.</p>
-      <div class="wgrid">
-        ${(cfg.calibres || []).map(c => `
-          <div class="wrow">
-            <label for="w_${slug(c)}">${esc(c)}</label>
-            <span><input type="number" id="w_${slug(c)}" data-cal="${esc(c)}" min="0" step="1"
-              value="${(cfg.calibreWeights || {})[c] ?? ''}" placeholder="—"><i>g</i></span>
-          </div>`).join('') || '<p class="muted" style="margin:0">Définissez d\'abord les calibres ci-dessus.</p>'}
-      </div>
+      <div class="wgrid">${weightsHtml(cfg)}</div>
     </div>
 
     <h3 style="margin:18px 0 6px;font-size:15px">La grille de contrôle</h3>
@@ -251,41 +315,132 @@ export function renderGroupEditor(id) {
       ${TYPE_LIST.map(T => `<button class="chip" data-tf="${T.id}" aria-pressed="${gridType === T.id}">${esc(T.short)}</button>`).join('')}
     </div>
     ${gridType ? `<p class="muted" style="margin:0 0 10px">Grille telle qu'elle apparaîtra
-      dans un ${esc(reportType(gridType).title.toLowerCase())}.</p>` : ''}
+      dans un ${esc(reportType(gridType).title.toLowerCase())}. Ce qui n'y figure pas
+      reste affiché en grisé : rien ne disparaît, tout se réaffiche d'une touche.</p>` : ''}
+    <!-- Toutes les sections sont TOUJOURS listées, filtre ou pas. Les
+         masquer dans la vue filtrée revenait à les rendre
+         irrécupérables : une section vide ne pouvait plus recevoir de
+         critère, et une section dont la portée contredisait celle de
+         ses critères n'apparaissait plus nulle part — ni ici, ni dans
+         les rapports. -->
     ${(cfg.sections || []).map((sec, si) => {
-      const shown = (sec.fields || []).filter(f => appliesTo(f, gridType));
-      if (gridType && (!appliesTo(sec, gridType) || !shown.length)) return '';
+      const live = secLive(sec);                       // visible dans la vue courante
+      const all  = (sec.fields || []);
+      const shown = all.filter(f => fieldLive(sec, f, gridType) || !gridType);
+      const count = gridType ? all.filter(f => fieldLive(sec, f, gridType)).length : all.length;
+      const last  = (cfg.sections || []).length - 1;
       return `
-      <details class="sec"><summary>${esc(sec.label)} <span class="count">${shown.length}</span>
-        ${typesLabel(sec) ? `<span class="pill sm">${esc(typesLabel(sec))}</span>` : ''} <span class="caret">▾</span></summary>
+      <details class="sec${live ? '' : ' off'}" data-si="${si}">
+        <summary>${esc(sec.label)} <span class="count">${count}</span>
+        ${scopePill(sec, live)} <span class="caret">▾</span></summary>
         <div class="body">
-          ${shown.map(f => {
-            const fi = sec.fields.indexOf(f);
+          ${all.map((f, fi) => {
+            const fl = fieldLive(sec, f, gridType);
             return `
-            <div class="crit" style="cursor:pointer" data-edit="${si}.${fi}">
+            <div class="crit${fl ? '' : ' off'}" data-fi="${fi}">
+              <span class="ord">
+                <button type="button" class="ordb" data-mf="${si}.${fi}.-1"${fi === 0 ? ' disabled' : ''} aria-label="Monter">▲</button>
+                <button type="button" class="ordb" data-mf="${si}.${fi}.1"${fi === all.length - 1 ? ' disabled' : ''} aria-label="Descendre">▼</button>
+              </span>
               <span class="dot ${sevDot(f)}"></span>
-              <span class="lb">${esc(f.label)}<small>${describe(f)}${
-                typesLabel(f) ? ` · ${esc(typesLabel(f))} seulement` : ''}</small></span>
-              <span style="color:var(--ink-3)">›</span>
+              <span class="lb" data-edit="${si}.${fi}">${esc(f.label)}<small>${describe(f)}</small></span>
+              ${scopePill(f, fl, sec)}
+              <button type="button" class="ordb wide" data-mask="${si}.${fi}"
+                aria-label="${fl ? 'Masquer' : 'Afficher'}">${fl ? '🚫' : '👁'}</button>
             </div>`; }).join('')}
+          ${all.length ? '' : `<p class="muted" style="margin:0">Section vide. Touchez « Critère » pour la remplir.</p>`}
+          ${count === 0 && all.length && gridType
+            ? `<p class="hint" style="margin:8px 0 0">Aucun critère de cette section n'apparaît
+               dans un ${esc(reportType(gridType).title.toLowerCase())}.</p>` : ''}
           <div class="btn-row" style="margin-top:10px">
+            <span class="ord">
+              <button type="button" class="ordb" data-ms="${si}.-1"${si === 0 ? ' disabled' : ''} aria-label="Monter la section">▲</button>
+              <button type="button" class="ordb" data-ms="${si}.1"${si === last ? ' disabled' : ''} aria-label="Descendre la section">▼</button>
+            </span>
             <button class="btn ghost sm" data-addf="${si}">${icon('plus')} Critère</button>
             <button class="btn ghost sm" data-editsec="${si}">${icon('edit')} Titre &amp; portée</button>
-            ${gridType
-              ? `<button class="btn ghost sm" data-hidesec="${si}">Retirer de ${esc(reportType(gridType).short)}</button>
-                 <button class="btn ghost sm danger" data-delsec="${si}">Supprimer partout</button>`
-              : `<button class="btn ghost sm danger" data-delsec="${si}">Supprimer</button>`}
+            <button class="btn ghost sm" data-masksec="${si}">${live ? 'Masquer' : 'Afficher'}${
+              gridType ? ` ici` : ''}</button>
+            <button class="btn ghost sm danger" data-delsec="${si}">Supprimer</button>
           </div>
         </div></details>`; }).join('')}
 
     <div class="btn-row" style="margin-top:12px">
       <button class="btn ghost" id="addsec">${icon('plus')} Section</button>
-      <button class="btn ghost danger" id="delg">Supprimer le groupe</button>
+      ${g.active === false
+        ? '<button class="btn ghost" id="undelg">Remettre en service</button>'
+        : '<button class="btn ghost danger" id="delg">Supprimer le groupe</button>'}
     </div>
     <div class="sticky-actions"><button class="btn block" id="save">Enregistrer</button></div>`,
     { back: () => back('#/settings/groups'),
       onMount() {
+        /* L'en-tête (nom, tolérance, variétés, calibres, protocole)
+           n'était lu qu'au moment d'enregistrer. Or la page se redessine
+           à chaque geste — filtre de type, ajout de critère, suppression
+           de section — et emportait avec elle tout ce qui venait d'être
+           tapé. On recopie donc la saisie dans le groupe au fil de la
+           frappe : le redessin repart de valeurs à jour, et « Enregistrer »
+           n'a plus qu'à persister. */
+        readHeader();
+        ['#nm', '#ic', '#tol', '#vars', '#pf', '#ps', '#prf'].forEach(s => {
+          const i = $(s); if (i) i.oninput = readHeader;
+        });
+        $$('[data-cal]').forEach(i => i.oninput = readHeader);
+        /* Les calibres commandent la liste des poids minimums : on
+           redessine cette liste quand ils changent, en conservant les
+           poids déjà saisis — y compris lors d'un simple renommage. */
+        const cals = $('#cals');
+        if (cals) cals.onchange = () => { readHeader(); repaintWeights(); };
+
+        function readHeader() {
+          const v = (s) => $(s)?.value ?? '';
+          g.name = v('#nm').trim() || g.name;
+          g.config.icon = v('#ic').trim();
+          /* `Number(x) || 10` réécrivait une tolérance de 0 en 10 —
+             or 0 % est un réglage légitime : aucune non-conformité
+             admise. */
+          const tol = num(v('#tol'));
+          g.config.tolerance = tol == null ? (g.config.tolerance ?? 10) : Math.max(0, tol);
+          g.config.varieties = splitList(v('#vars'));
+          const oldCals = g.config.calibres || [];
+          const newCals = splitList(v('#cals'));
+          g.config.calibres = newCals;
+          g.config.calibreWeights = remapWeights(g.config.calibreWeights || {}, oldCals, newCals);
+          g.config.pressure = {
+            fruits: Math.max(1, num(v('#pf')) ?? pr.fruits),
+            sides:  Math.max(1, num(v('#ps')) ?? pr.sides),
+            ref:    clampP(v('#prf')) ?? pr.ref,
+            unit:   pr.unit
+          };
+        }
+
+        /* Les poids sont indexés par libellé de calibre. Renommer « 18 »
+           en « Cal 18 » aurait donc effacé son poids minimum en
+           silence. Quand la liste garde sa longueur, on suit les
+           positions ; sinon on garde ce qui porte encore le même nom. */
+        function remapWeights(cur, oldList, newList) {
+          const read = {};
+          $$('[data-cal]').forEach(inp => {
+            const t = inp.value.trim();
+            if (t !== '') read[inp.dataset.cal] = Number(t);
+          });
+          const src = { ...cur, ...read };
+          const out = {};
+          const sameLength = oldList.length === newList.length;
+          newList.forEach((c, i) => {
+            const hit = src[c] != null ? src[c] : (sameLength ? src[oldList[i]] : undefined);
+            if (hit != null && isFinite(hit)) out[c] = hit;
+          });
+          return out;
+        }
+
+        function repaintWeights() {
+          const box = $('.wgrid');
+          if (box) { box.innerHTML = weightsHtml(g.config); $$('[data-cal]').forEach(i => i.oninput = readHeader); }
+        }
+
         $$('[data-tf]').forEach(c => c.onclick = () => {
+          readHeader();
           gridType = c.dataset.tf === gridType ? '' : c.dataset.tf;
           renderGroupEditor(id);
         });
@@ -294,22 +449,92 @@ export function renderGroupEditor(id) {
           editField(g, si, fi);
         });
         $$('[data-addf]').forEach(el => el.onclick = () => editField(g, +el.dataset.addf, -1));
-        /* Retirer une section d'un seul type de rapport : c'est le
-           geste que l'on cherche en vue filtrée. « Supprimer » à côté
-           efface partout, et le dit. */
-        $$('[data-hidesec]').forEach(el => el.onclick = async () => {
-          const sec = g.config.sections[+el.dataset.hidesec];
-          const keep = TYPE_LIST.map(T => T.id).filter(t => t !== gridType &&
-            (!Array.isArray(sec.types) || !sec.types.length || sec.types.includes(t)));
-          if (!keep.length) {
-            return toast("C'est son dernier type de rapport : supprimez-la plutôt.", 'err');
-          }
-          const before = structuredClone(sec.types);
-          sec.types = keep.length === TYPE_LIST.length ? undefined : keep;
+
+        /* ---------------- ordre ----------------
+           Deux flèches plutôt qu'un glisser-déposer : sur un téléphone,
+           à une main, avec des gants de chambre froide, c'est le seul
+           geste qui marche à tous les coups. L'ordre du tableau EST
+           l'ordre de saisie — le formulaire lit la même liste. */
+        const swap = (arr, i, j) => { const t = arr[i]; arr[i] = arr[j]; arr[j] = t; };
+
+        $$('[data-ms]').forEach(el => el.onclick = async () => {
+          const [si, d] = el.dataset.ms.split('.').map(Number);
+          const list = g.config.sections, j = si + d;
+          if (j < 0 || j >= list.length) return;
+          readHeader(); swap(list, si, j);
           await saveGroup(g); renderGroupEditor(id);
-          toast(`« ${sec.label} » retirée de ${reportType(gridType).short}`, '',
+          openSection(j);
+        });
+
+        $$('[data-mf]').forEach(el => el.onclick = async () => {
+          const [si, fi, d] = el.dataset.mf.split('.').map(Number);
+          const list = g.config.sections[si].fields, j = fi + d;
+          if (j < 0 || j >= list.length) return;
+          readHeader(); swap(list, fi, j);
+          await saveGroup(g); renderGroupEditor(id);
+          openSection(si);
+        });
+
+        /* ---------------- masquer / afficher ----------------
+           On ne supprime plus pour « ne plus le voir » : un critère
+           masqué reste dans la grille, avec son barème et ses
+           traductions, et se réaffiche d'une touche. Dans une vue
+           filtrée, le geste ne concerne QUE ce type de rapport ; dans
+           la vue « Tous les rapports », il vaut partout. */
+        const setLive = (item, on) => {
+          if (!gridType) { if (on) delete item.hidden; else item.hidden = true; return; }
+          const cur = Array.isArray(item.types) && item.types.length ? item.types.slice() : TYPE_IDS.slice();
+          if (on) {
+            delete item.hidden;
+            if (!cur.includes(gridType)) cur.push(gridType);
+            if (cur.length >= TYPE_IDS.length) delete item.types; else item.types = cur;
+          } else {
+            const keep = cur.filter(t => t !== gridType);
+            /* Plus aucun type : ce n'est plus une restriction de portée,
+               c'est un masquage pur et simple. On le dit ainsi plutôt
+               que d'enregistrer une portée vide, que personne ne sait
+               relire. */
+            if (!keep.length) { item.hidden = true; delete item.types; }
+            else item.types = keep;
+          }
+        };
+        const scopeWord = () => gridType ? ` dans ${reportType(gridType).short}` : ' partout';
+
+        $$('[data-masksec]').forEach(el => el.onclick = async () => {
+          const si = +el.dataset.masksec;
+          const sec = g.config.sections[si];
+          const was = { hidden: sec.hidden, types: structuredClone(sec.types) };
+          const on = !secLive(sec);
+          readHeader(); setLive(sec, on);
+          await saveGroup(g); renderGroupEditor(id); openSection(si);
+          toast(`« ${sec.label} » ${on ? 'affichée' : 'masquée'}${scopeWord()}`, '',
             { action: 'Annuler', onAction: async () => {
-                sec.types = before; await saveGroup(g); renderGroupEditor(id);
+                delete sec.hidden; delete sec.types;
+                if (was.hidden) sec.hidden = was.hidden;
+                if (was.types) sec.types = was.types;
+                await saveGroup(g); renderGroupEditor(id); openSection(si);
+              } });
+        });
+
+        $$('[data-mask]').forEach(el => el.onclick = async () => {
+          const [si, fi] = el.dataset.mask.split('.').map(Number);
+          const sec = g.config.sections[si], f = sec.fields[fi];
+          /* Un critère ne peut pas être affiché là où sa section ne
+             l'est pas : on remet la section d'abord, sinon la touche
+             ne produirait aucun effet visible et paraîtrait cassée. */
+          if (!secLive(sec) && !fieldLive(sec, f, gridType)) {
+            return toast(`« ${sec.label} » est masquée${scopeWord()} : affichez d'abord la section.`, 'err');
+          }
+          const was = { hidden: f.hidden, types: structuredClone(f.types) };
+          const on = !fieldLive(sec, f, gridType);
+          readHeader(); setLive(f, on);
+          await saveGroup(g); renderGroupEditor(id); openSection(si);
+          toast(`« ${f.label} » ${on ? 'affiché' : 'masqué'}${scopeWord()}`, '',
+            { action: 'Annuler', onAction: async () => {
+                delete f.hidden; delete f.types;
+                if (was.hidden) f.hidden = was.hidden;
+                if (was.types) f.types = was.types;
+                await saveGroup(g); renderGroupEditor(id); openSection(si);
               } });
         });
 
@@ -329,32 +554,34 @@ export function renderGroupEditor(id) {
         });
         $('#addsec').onclick = () => editSection(g, -1);
         $$('[data-editsec]').forEach(el => el.onclick = () => editSection(g, +el.dataset.editsec));
-        $('#delg').onclick = async () => {
-          if (!(await confirmSheet('Supprimer le groupe', 'Les rapports déjà saisis restent lisibles : chacun conserve une copie de sa grille.'))) return;
-          await db('product_groups').eq('id', id).remove();
-          await local.del('groups', id); await loadRefs();
-          toast('Groupe supprimé'); go('#/settings/groups');
+        /* Une suppression passe par la file d'attente comme tout le
+           reste : hors ligne, l'écriture directe échouait sans un mot
+           et le groupe réapparaissait à la synchronisation suivante. */
+        const delg = $('#delg');
+        if (delg) delg.onclick = async () => {
+          if (!(await confirmSheet('Supprimer le groupe',
+                'Le produit ne sera plus proposé à la saisie. Les rapports déjà enregistrés restent lisibles, et le groupe peut être remis en service.'))) return;
+          readHeader();
+          g.active = false;
+          await saveGroup(g);
+          toast('Groupe supprimé', '', { action: 'Annuler', onAction: async () => {
+            g.active = true;
+            await saveGroup(g);
+            renderGroups();
+          } });
+          go('#/settings/groups');
+        };
+        const undelg = $('#undelg');
+        if (undelg) undelg.onclick = async () => {
+          readHeader();
+          g.active = true;
+          await saveGroup(g);
+          toast('Groupe remis en service'); renderGroupEditor(id);
         };
         $('#save').onclick = async () => {
-          g.name = $('#nm').value.trim() || g.name;
-          g.config.icon = $('#ic').value.trim();
-          g.config.tolerance = Number($('#tol').value) || 10;
-          g.config.varieties = splitList($('#vars').value);
-          g.config.calibres  = splitList($('#cals').value);
-          const weights = {};
-          $$('[data-cal]').forEach(inp => {
-            const v = inp.value.trim();
-            if (v !== '') weights[inp.dataset.cal] = Number(v);
-          });
-          g.config.calibreWeights = weights;
-          g.config.pressure = {
-            fruits: Math.max(1, Number($('#pf').value) || pr.fruits),
-            sides:  Math.max(1, Number($('#ps').value) || pr.sides),
-            ref:    clampP($('#prf').value) ?? pr.ref,
-            unit:   pr.unit
-          };
-          await saveGroup(g);
-          toast('Enregistré'); go('#/settings/groups');
+          readHeader();
+          toast(await saveGroup(g) ? 'Enregistré' : 'Enregistré · envoi à la reconnexion');
+          go('#/settings/groups');
         };
       } });
 }
@@ -362,7 +589,11 @@ export function renderGroupEditor(id) {
 /* Une section se crée, se renomme et se traduit au même endroit. */
 function editSection(g, si) {
   const isNew = si < 0;
-  const sec = isNew ? { id: '', label: '', fields: [] } : g.config.sections[si];
+  /* Créée depuis une vue filtrée, la section arrive restreinte à ce
+     type de rapport : c'est ce qu'on venait y faire. Le bloc « Portée »
+     reste modifiable juste en dessous. */
+  const sec = isNew ? { id: '', label: '', fields: [], types: gridType ? [gridType] : undefined }
+                    : g.config.sections[si];
   sheet(isNew ? 'Nouvelle section' : 'Titre & portée', `
     <div class="field"><label for="sl">Titre</label>
       <input type="text" id="sl" value="${esc(sec.label)}" placeholder="Ex. Troubles / Maladies"></div>
@@ -458,10 +689,22 @@ function editField(g, si, fi) {
     <div class="field"><label for="cu">Unité affichée</label>
       <input type="text" id="cu" value="${esc(f.unit || '')}" placeholder="%, kg, °C, °Bx…"></div>
 
-    ${typesBlock(f)}
-    ${!isNew && gridType && appliesTo(f, gridType) ? `
-      <button type="button" class="btn ghost block" id="hideHere" style="margin-bottom:13px">
-        Retirer ce critère du ${esc(reportType(gridType).title.toLowerCase())}</button>` : ''}
+    <!-- Certains critères ne se contentent pas d'être notés : ils
+         alimentent un des trois axes du verdict. C'était jusqu'ici
+         réservé aux critères d'origine, reconnus à leur nom ; c'est
+         désormais un réglage, donc disponible sur une grille créée de
+         toutes pièces. -->
+    <div class="field"><label for="crole">Rôle dans le verdict</label>
+      <select id="crole">${Object.entries(FIELD_ROLES).map(([v, w]) =>
+        `<option value="${v}"${v === fieldRole(f) ? ' selected' : ''}>${esc(w)}</option>`).join('')}</select>
+      <div class="hint">« Contrôlés » et « en défaut » se combinent pour calculer
+        automatiquement le taux de non-conformité du rapport.</div></div>
+
+    ${typesBlock(f, sec)}
+    ${!isNew ? `
+      <button type="button" class="btn ghost block" id="maskHere" style="margin-bottom:13px">
+        ${isHidden(f) ? 'Afficher ce critère dans les rapports'
+                      : 'Masquer ce critère — il reste dans la grille'}</button>` : ''}
     <div id="i18nBox">${i18nBlock(f.label, f.i18n)}</div>
     <div class="field"><label for="ch">Petite aide affichée sous le critère</label>
       <input type="text" id="ch" value="${esc(f.hint || '')}" placeholder="Facultatif"></div>
@@ -490,6 +733,8 @@ function editField(g, si, fi) {
                 <span>jusqu'à <input type="number" step="0.1" id="fa" value="${f.failAt ?? ''}">${unit}</span></div>
               <div class="srow"><span class="sdot fail"></span><b>Au-delà</b>
                 <span id="beyond">${OUTCOMES[outcomesFor(type).includes(sev) ? sev : 'majeur'][0].toLowerCase()}</span></div>
+              <p class="hint">Laissez les deux cases vides pour un pourcentage purement
+                informatif, relevé mais jamais noté.</p>
             </div>
             ${outcomeBlock(type, sev, 'Au-delà du second seuil, c\'est…')}`;
           } else if (type === 'num') {
@@ -606,17 +851,19 @@ function editField(g, si, fi) {
 
         $$$('#cancel').onclick = () => close();
 
-        const hide = $$$('#hideHere');
-        if (hide) hide.onclick = async () => {
-          const keep = TYPE_LIST.map(T => T.id).filter(t => t !== gridType &&
-            (!Array.isArray(f.types) || !f.types.length || f.types.includes(t)));
-          if (!keep.length) return toast("C'est son dernier type : supprimez plutôt le critère.", 'err');
-          const before = structuredClone(sec.fields[fi].types);
-          sec.fields[fi].types = keep.length === TYPE_LIST.length ? undefined : keep;
+        /* Masquer depuis la fiche : même geste que la touche 👁 de la
+           liste, à portée de main quand on vient de relire le barème et
+           qu'on décide que ce critère ne sert plus cette saison. */
+        const mask = $$$('#maskHere');
+        if (mask) mask.onclick = async () => {
+          const cur = sec.fields[fi];
+          const before = cur.hidden;
+          if (before) delete cur.hidden; else cur.hidden = true;
           await saveGroup(g); close(); renderGroupEditor(g.id);
-          toast(`« ${f.label} » retiré de ${reportType(gridType).short}`, '',
+          toast(`« ${f.label} » ${before ? 'affiché' : 'masqué'} — il reste dans la grille`, '',
             { action: 'Annuler', onAction: async () => {
-                sec.fields[fi].types = before; await saveGroup(g); renderGroupEditor(g.id);
+                if (before) cur.hidden = true; else delete cur.hidden;
+                await saveGroup(g); renderGroupEditor(g.id);
               } });
         };
 
@@ -637,50 +884,93 @@ function editField(g, si, fi) {
         $$$('#ok').onclick = async () => {
           const label = $$$('#cl').value.trim();
           if (!label) return toast('Donnez un nom au critère', 'err');
+
+          const d = draftField();
+
+          /* Un barème à l'envers ne dit rien : « conforme jusqu'à 10,
+             à surveiller jusqu'à 4 » laisse un trou entre 4 et 10 que
+             personne ne saurait lire. On le refuse à la saisie plutôt
+             que de produire des verdicts incohérents. */
+          if (type === 'pct' && d.warnAt != null && d.failAt != null && d.warnAt > d.failAt)
+            return toast('Le second seuil doit être supérieur au premier', 'err');
+          if (type === 'num' && d.okMin != null && d.okMax != null && d.okMin > d.okMax)
+            return toast('Le minimum doit être inférieur au maximum', 'err');
+          if (type === 'choice' && !(d.options || []).length)
+            return toast('Ajoutez au moins un choix', 'err');
+
+          /* On repart du critère existant : `computed`, `role` et tout
+             réglage posé ailleurs doivent survivre à une simple
+             correction de libellé. Seules les clés de barème du type
+             précédent sont effacées — sinon un critère passé de
+             pourcentage à mesure garderait ses seuils fantômes. */
+          const base = fi >= 0 ? structuredClone(sec.fields[fi]) : {};
+          for (const k of ['warnAt', 'failAt', 'okMin', 'okMax', 'options']) delete base[k];
+
           const out = {
+            ...base,
             key: f.key || slug(label).replace(/-/g, '_') + '_' + Math.random().toString(36).slice(2, 5),
             label, type, severity: sev,
             unit: $$$('#cu').value.trim() || undefined,
             hint: $$$('#ch').value.trim() || undefined,
             types: readTypes(el),
+            role: $$$('#crole')?.value || undefined,
             i18n: readI18n(el),
-            ...draftField()
+            ...d
           };
-          delete out.step;
-          if (type === 'num') out.step = 0.01;
-          if (type === 'choice' && !out.options.length)
-            return toast('Ajoutez au moins un choix', 'err');
+          /* `step` n'a de sens que sur une mesure chiffrée, et le pas
+             d'origine du critère prime sur le pas par défaut. */
+          if (type === 'num') out.step = base.step ?? 0.01;
+          else delete out.step;
+          for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+
           if (fi >= 0) sec.fields[fi] = out; else sec.fields.push(out);
           await saveGroup(g); close(); renderGroupEditor(g.id);
         };
       } });
 }
 
+/* Local d'abord, file d'attente ensuite, envoi si le réseau le permet.
+   Renvoie `false` quand l'envoi n'a pas abouti — la modification est
+   enregistrée dans tous les cas, l'appelant le dit simplement autrement. */
 async function saveGroup(g) {
+  normalizeSections(g.config?.sections);
   await local.put('groups', g);
   await queue('group', { id: g.id, name: g.name, position: g.position, active: g.active, config: g.config });
-  await sync({ silent: true });
+  const ok = await sync({ silent: true });
   await loadRefs();
+  return ok;
 }
 
-const sevDot = (f) => f.severity === 'critique' ? 'fail' : f.severity === 'majeur' ? 'warn' : 'none';
+const sevDot = (f) => {
+  const s = effSeverity(f);
+  return s === 'critique' ? 'fail' : s === 'majeur' ? 'warn' : 'none';
+};
 /* Résumé d'un critère dans la liste : la même phrase que dans
    l'éditeur, en plus court. On y lit le dernier échelon — celui qui
    manquait — sans avoir à ouvrir la fiche. */
 const describe = (f) => {
   const u = f.unit ? ' ' + f.unit : '';
-  const beyond = (OUTCOMES[f.severity] || OUTCOMES.majeur)[0].toLowerCase();
+  const beyond = (OUTCOMES[effSeverity(f)] || OUTCOMES.majeur)[0].toLowerCase();
+  const role = fieldRole(f) ? ` · ${FIELD_ROLES[fieldRole(f)].toLowerCase()}` : '';
   if (f.type === 'pct')
-    return `Conforme jusqu'à ${f.warnAt ?? '—'}${u} · à surveiller jusqu'à ${f.failAt ?? '—'}${u} · au-delà : ${beyond}`;
+    return (f.warnAt == null && f.failAt == null)
+      ? 'Pourcentage informatif, jamais noté' + role
+      : `Conforme jusqu'à ${f.warnAt ?? '—'}${u} · à surveiller jusqu'à ${f.failAt ?? '—'}${u} · au-delà : ${beyond}${role}`;
   if (f.type === 'num')
-    return (f.okMin != null || f.okMax != null)
+    return ((f.okMin != null || f.okMax != null)
       ? `Accepté de ${f.okMin ?? '−∞'} à ${f.okMax ?? '+∞'}${u} · en dehors : ${beyond}`
-      : 'Mesure informative, jamais notée';
+      : 'Mesure informative, jamais notée') + role;
   if (f.type === 'choice')
-    return `${(f.options || []).map(o => o.v).join(', ') || 'aucun choix'} · « non conforme » : ${beyond}`;
-  return `Conforme / non conforme · « non » : ${beyond}`;
+    return `${(f.options || []).map(o => o.v).join(', ') || 'aucun choix'} · « non conforme » : ${beyond}${role}`;
+  return `Conforme / non conforme · « non » : ${beyond}${role}`;
 };
 const splitList = (s) => s.split(/[,\n]/).map(x => x.trim()).filter(Boolean);
+/* Vide ⇒ null, jamais 0 : un champ effacé ne vaut pas « zéro ». */
+const num = (v) => {
+  if (v === '' || v == null) return null;
+  const n = Number(v);
+  return isFinite(n) ? n : null;
+};
 const slug = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
 /* ======================== PARTENAIRES ======================== */
@@ -724,6 +1014,8 @@ function refRowsHtml(refs) {
       <select data-f="group" aria-label="Produit">
         <option value=""${!r.group ? ' selected' : ''}>Tous produits</option>
         ${state.groups.map(g => `<option value="${esc(g.id)}"${g.id === r.group ? ' selected' : ''}>${esc(g.config?.icon || '')} ${esc(g.name)}</option>`).join('')}
+        ${r.group && !state.groups.some(g => g.id === r.group)
+          ? `<option value="${esc(r.group)}" selected>⚠ ${esc(r.group)} (produit introuvable)</option>` : ''}
       </select>
       <select data-f="packaging" aria-label="Conditionnement">
         <option value=""${!r.packaging ? ' selected' : ''}>Tous conditionnements</option>
@@ -830,8 +1122,13 @@ function editPartner(p) {
           close();
           if (!(await confirmSheet('Supprimer', p.name))) return;
           const copy = structuredClone(p);
-          await db('partners').eq('id', p.id).remove().catch(() => {});
-          await local.del('partners', p.id); await loadRefs(); renderPartners();
+          /* La suppression passe par la file d'attente : appelée en
+             direct, elle échouait hors ligne sans un mot et le
+             partenaire réapparaissait à la synchronisation suivante. */
+          await local.del('partners', p.id);
+          await queue('deletePartner', { id: p.id });
+          try { await sync({ silent: true }); } catch (e) { /* renvoyé plus tard */ }
+          await loadRefs(); renderPartners();
           toast(`${copy.name} supprimé`, '', { action: 'Annuler', onAction: async () => {
             await local.put('partners', copy);
             await queue('partner', copy);
@@ -842,8 +1139,13 @@ function editPartner(p) {
           /* Une référence incomplète ne sert à rien et s'appliquerait
              silencieusement de travers : on ne garde que les lignes
              exploitables. */
-          const keep = kind === 'client' ? refs.filter(r =>
-            r.mode === 'range' ? (r.min != null && r.max != null) : r.ref != null) : [];
+          const usable = refs.filter(r =>
+            r.mode === 'range' ? (r.min != null && r.max != null) : r.ref != null);
+          /* Un client rebasculé en fournisseur par erreur perdait
+             définitivement ses pressions attendues. On les conserve :
+             elles ne servent simplement pas tant que le partenaire
+             n'est pas un client. */
+          const keep = kind === 'client' ? usable : (refList(p).length ? refList(p) : usable);
           const row = { ...p, kind, name: el.querySelector('#pn').value.trim(),
             country: el.querySelector('#pc').value.trim() || null,
             phone: el.querySelector('#pp').value.trim() || null,
@@ -852,7 +1154,8 @@ function editPartner(p) {
           if (!row.name) return toast('Donnez un nom', 'err');
           await local.put('partners', row);
           await queue('partner', row);
-          await sync({ silent: true }); await loadRefs();
+          if (!(await sync({ silent: true }))) toast('Enregistré · envoi à la reconnexion');
+          await loadRefs();
           close(); renderPartners();
         };
       } });
@@ -904,9 +1207,19 @@ function editUser(u) {
     { onMount(el, close) {
         const tog = el.querySelector('#tog');
         if (tog) tog.onclick = async () => {
-          try { await db('profiles').eq('id', u.id).update({ approved: !u.approved }); }
+          /* Valider l'accès enregistre aussi le rôle choisi juste
+             au-dessus : le bouton était le geste naturel pour « ce
+             collègue est inspecteur, ouvre-lui l'accès », et le rôle
+             partait à la poubelle. */
+          const patch = { approved: !u.approved };
+          const role = el.querySelector('#ur').value;
+          if (!u.approved && role !== u.role) patch.role = role;
+          try { await db('profiles').eq('id', u.id).update(patch); }
           catch (e) { return toast(e.message, 'err'); }
-          close(); toast(u.approved ? 'Accès suspendu' : 'Accès validé'); renderUsers();
+          close();
+          toast(u.approved ? 'Accès suspendu'
+                           : `Accès validé${patch.role ? ' · ' + roleLabel(patch.role).toLowerCase() : ''}`);
+          renderUsers();
         };
         el.querySelector('#ok').onclick = async () => {
           if (!me) {
@@ -964,9 +1277,24 @@ export function renderAccount() {
           try { await auth.updatePassword(p); $('#np').value = ''; toast('Mot de passe modifié'); }
           catch (e) { toast(e.message, 'err'); }
         };
+        /* La déconnexion efface maintenant vraiment l'appareil — sinon
+           le collègue qui se connecte ensuite sur le même téléphone
+           ouvre l'application sur les rapports du précédent. Il faut
+           donc le dire, et surtout dire ce qui n'est PAS récupérable :
+           un brouillon ne part jamais au serveur. */
         $('#out').onclick = async () => {
-          if (await confirmSheet('Se déconnecter', 'Les rapports non synchronisés resteront sur cet appareil.', { okLabel: 'Se déconnecter' }))
-            logout();
+          const pend = await pendingCount().catch(() => 0);
+          const drafts = (await allDrafts().catch(() => [])).length;
+          const risque = [
+            pend ? `${pend} élément${pend > 1 ? 's' : ''} pas encore envoyé${pend > 1 ? 's' : ''} au serveur` : '',
+            drafts ? `${drafts} brouillon${drafts > 1 ? 's' : ''} de saisie` : ''
+          ].filter(Boolean).join(' et ');
+          const msg = risque
+            ? `Cet appareil sera vidé de vos données. ${risque[0].toUpperCase() + risque.slice(1)} ` +
+              `${risque.includes(' et ') ? 'seront perdus' : 'sera perdu'} définitivement.`
+            : 'Cet appareil sera vidé de vos données. Tout est déjà envoyé au serveur : vous les retrouverez à la reconnexion.';
+          if (await confirmSheet('Se déconnecter', msg,
+                { okLabel: 'Se déconnecter', danger: !!risque })) logout();
         };
       } });
 }

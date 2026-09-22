@@ -12,8 +12,16 @@ export async function logoSvgText() {
   if (cachedSvg) return cachedSvg;
   try {
     const r = await fetch('./logo.svg');
-    cachedSvg = await r.text();
-  } catch { cachedSvg = null; }
+    if (!r.ok) return null;
+    const txt = await r.text();
+    /* Ceinture et bretelles : un service worker mal réglé pouvait
+       renvoyer la page HTML à la place du SVG. Mise en mémoire telle
+       quelle, elle contaminait l'en-tête de TOUS les PDF envoyés aux
+       clients. On ne garde que ce qui est bien un SVG, et un échec
+       n'est jamais mémorisé — le prochain appel réessaiera. */
+    if (!/^\s*(<\?xml|<svg)/i.test(txt) || !/<svg[\s>]/i.test(txt)) return null;
+    cachedSvg = txt;
+  } catch { return null; }
   return cachedSvg;
 }
 

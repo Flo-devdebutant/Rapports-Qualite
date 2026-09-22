@@ -50,22 +50,39 @@ export const icon = (n, cls = '') =>
    seule façon honnête de proposer un repentir sur une suppression :
    demander confirmation avant chaque geste use l'utilisateur, offrir
    le retour arrière après coup ne coûte rien. */
-let toastTimer;
-export function toast(msg, kind = '', { action = '', onAction = null, ms } = {}) {
+let toastTimer, toastExpire = null;
+export function toast(msg, kind = '', { action = '', onAction = null, onExpire = null, ms } = {}) {
   const el = document.getElementById('toast');
   const delay = ms ?? (action ? 6000 : 2600);
+  /* Un message chassé par un autre ne doit pas emporter son ménage :
+     on exécute la suite différée du précédent avant de le remplacer. */
+  const prev = toastExpire; toastExpire = null;
+  try { prev?.(); } catch (e) {}
   el.innerHTML = '';
   el.append(document.createTextNode(msg));
   if (action) {
     const b = document.createElement('button');
     b.className = 'toast-act';
     b.textContent = action;
-    b.onclick = () => { el.className = 'toast ' + kind; clearTimeout(toastTimer); onAction?.(); };
+    b.onclick = () => {
+      el.className = 'toast ' + kind;
+      clearTimeout(toastTimer);
+      toastExpire = null;                 // l'annulation a eu lieu : plus rien à nettoyer
+      onAction?.();
+    };
     el.append(b);
   }
+  /* `onExpire` court quand le message s'éteint sans que l'action ait
+     été employée : c'est là, et seulement là, que le définitif devient
+     définitif. */
+  toastExpire = onExpire;
   el.className = 'toast on ' + kind;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.className = 'toast ' + kind; }, delay);
+  toastTimer = setTimeout(() => {
+    el.className = 'toast ' + kind;
+    const f = toastExpire; toastExpire = null;
+    try { f?.(); } catch (e) {}
+  }, delay);
 }
 
 /* --------------------------- feuille modale ---------------------------
@@ -95,6 +112,13 @@ function unlockScroll() {
   window.scrollTo(0, lockY);
 }
 
+/* Feuilles actuellement ouvertes. Le bouton « retour » du système
+   change l'adresse sans passer par l'application : sans ce registre, la
+   feuille restait affichée par-dessus le nouvel écran et le corps de
+   page restait figé — l'application paraissait plantée. */
+const openSheets = new Set();
+export function closeSheets() { for (const c of [...openSheets]) c(); }
+
 export function sheet(title, html, { onMount, onClose } = {}) {
   const bg = document.createElement('div'); bg.className = 'sheet-bg';
   const sh = document.createElement('div'); sh.className = 'sheet';
@@ -108,6 +132,7 @@ export function sheet(title, html, { onMount, onClose } = {}) {
   const close = () => {
     if (closed) return;
     closed = true;
+    openSheets.delete(close);
     bg.classList.remove('on'); sh.classList.remove('on');
     sh.style.transform = '';
     setTimeout(() => { bg.remove(); sh.remove(); }, 240);
@@ -115,6 +140,7 @@ export function sheet(title, html, { onMount, onClose } = {}) {
     unlockScroll();
     onClose?.();
   };
+  openSheets.add(close);
   const onKey = (e) => { if (e.key === 'Escape') close(); };
   bg.onclick = close;
   document.addEventListener('keydown', onKey);
@@ -249,8 +275,21 @@ export function confirmSheet(title, message, { danger = true, okLabel = 'Confirm
    ré-encode en JPEG 0,72 — ~150 à 300 ko, largement suffisant pour
    documenter une tache ou une lecture de pénétromètre. */
 export async function compressImage(file, maxSide = 1400, quality = 0.72) {
-  const bitmap = await createImageBitmap(file).catch(() => null);
-  if (!bitmap) return file;
+  let bitmap = await createImageBitmap(file).catch(() => null);
+  if (!bitmap) {
+    /* `createImageBitmap` refuse le HEIC des iPhone récents. Le
+       renvoyer tel quel était le pire des deux mondes : le fichier
+       partait au stockage étiqueté image/jpeg, et le PDF — qui n'embarque
+       que du JPEG — produisait une page illisible. Second essai par
+       <img>, que Safari sait décoder ; à défaut on renonce franchement
+       plutôt que de livrer un faux JPEG. */
+    bitmap = await viaImage(file);
+    if (!bitmap) {
+      const e = new Error('Format d\'image non pris en charge — enregistrez la photo en JPEG.');
+      e.unsupported = true;
+      throw e;
+    }
+  }
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
   const w = Math.round(bitmap.width * scale), h = Math.round(bitmap.height * scale);
   const canvas = document.createElement('canvas');
@@ -259,7 +298,27 @@ export async function compressImage(file, maxSide = 1400, quality = 0.72) {
   ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close?.();
-  return await new Promise(res => canvas.toBlob(b => res(b || file), 'image/jpeg', quality));
+  const out = await new Promise(res => canvas.toBlob(b => res(b), 'image/jpeg', quality));
+  if (!out) throw new Error('Conversion de la photo impossible');
+  return out;
+}
+
+/* Décodage de secours : un <img> accepte les formats que le navigateur
+   sait afficher même quand createImageBitmap les refuse. Un
+   HTMLImageElement est une source valide pour drawImage et expose
+   width/height comme un ImageBitmap — il se substitue tel quel. */
+function viaImage(file) {
+  return new Promise(res => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      img.width = img.naturalWidth; img.height = img.naturalHeight;
+      URL.revokeObjectURL(url);
+      res(img.naturalWidth ? img : null);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); res(null); };
+    img.src = url;
+  });
 }
 
 /* ---------------------------- thème ---------------------------- */
@@ -274,14 +333,20 @@ export function setTheme(mode) {
     else { localStorage.setItem('qc.theme', mode); document.documentElement.dataset.theme = mode; }
   } catch {}
   /* La barre d'adresse du téléphone suit la couleur déclarée : sans
-     cette mise à jour elle resterait claire au-dessus d'un fond sombre. */
-  const dark = mode === 'dark' ||
-    (mode === 'auto' && matchMedia('(prefers-color-scheme:dark)').matches);
-  document.querySelectorAll('meta[name="theme-color"]').forEach(m => m.remove());
-  const meta = document.createElement('meta');
-  meta.name = 'theme-color';
-  meta.content = dark ? '#191b1f' : '#ff8725';
-  document.head.appendChild(meta);
+     cette mise à jour elle resterait claire au-dessus d'un fond sombre.
+     On n'ajoute QU'UNE balise sans media, et on laisse en place les
+     deux balises `prefers-color-scheme` de la page : les effacer
+     privait le mode « automatique » de tout repli, et la barre restait
+     figée sur la dernière couleur choisie même après retour à
+     l'automatique. */
+  let meta = document.querySelector('meta[name="theme-color"]:not([media])');
+  if (mode === 'auto') { meta?.remove(); return; }
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.name = 'theme-color';
+    document.head.appendChild(meta);
+  }
+  meta.content = mode === 'dark' ? '#191b1f' : '#ff8725';
 }
 
 /* --------------------------- divers --------------------------- */

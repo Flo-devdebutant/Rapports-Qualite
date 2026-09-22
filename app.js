@@ -7,9 +7,9 @@
 
 import { CONFIG } from './config.js';
 import { auth, db, currentUser } from './supa.js';
-import { local, sync, startAutoSync, onSync, pendingCount, openDB } from './store.js';
+import { local, sync, startAutoSync, onSync, pendingCount, openDB, forgetPhotos } from './store.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
-import { $, esc, icon, toast } from './ui.js';
+import { $, esc, icon, toast, closeSheets } from './ui.js';
 import { logoDataUrl } from './logo.js';
 import { renderFeed, renderReportView } from './reports.js';
 import { renderForm, allDrafts } from './form.js';
@@ -28,12 +28,41 @@ export const state = {
 
 /* ============================= AMORÇAGE ============================= */
 async function boot() {
+  try { await bootInner(); }
+  catch (e) {
+    /* Sans ce filet, la moindre erreur d'amorçage laissait un écran de
+       chargement tournant indéfiniment, sans un mot ni un moyen de
+       repartir. */
+    console.error('boot', e);
+    $('#app').innerHTML = `<main><div class="auth-wrap"><div class="card pad" style="text-align:center">
+      <div style="font-size:34px">⚠️</div>
+      <h2 style="font-size:17px;margin:10px 0 6px">Démarrage impossible</h2>
+      <p class="muted">${esc(e?.message || 'Erreur inconnue')}</p>
+      <div class="btn-row" style="justify-content:center;margin-top:16px">
+        <button class="btn ghost sm" id="retry">Réessayer</button>
+        <button class="btn ghost sm" id="bout">Se déconnecter</button>
+      </div></div></div></main>`;
+    $('#retry').onclick = () => boot();
+    $('#bout').onclick = () => logout();
+  }
+}
+
+async function bootInner() {
   await openDB();
   if (!currentUser()) return renderAuth();
+
+  /* On tire d'abord ce que le serveur a, puis on lit le cache : sans
+     cet ordre, le tout premier démarrage trouvait la base locale vide
+     et un administrateur réécrivait par-dessus les grilles du serveur,
+     pendant qu'un inspecteur voyait « aucun groupe de produit ». */
+  if (navigator.onLine) { try { await sync({ silent: true }); } catch (e) { /* on continue hors ligne */ } }
+
   try {
     await loadProfile();
-  } catch {
-    // Hors-ligne au démarrage : on repart du cache local.
+  } catch (e) {
+    /* Un refus d'authentification n'est pas une coupure réseau : on
+       renvoie à la connexion plutôt que de servir un cache périmé. */
+    if (e?.auth) { await auth.signOut(); return renderAuth(); }
     state.profile = await local.meta('profile');
     if (!state.profile) return renderAuth();
   }
@@ -68,14 +97,20 @@ export async function loadRefs() {
   if (s) state.settings = { ...DEFAULT_SETTINGS, ...s };
 
   /* Première ouverture sur une base vide : on sème le catalogue par
-     défaut pour que l'inspecteur puisse saisir immédiatement. */
+     défaut pour que l'inspecteur puisse saisir immédiatement. On
+     vérifie d'abord auprès du serveur que la table est réellement
+     vide — le cache local l'est aussi avant la première synchro, et
+     semer sur cette seule foi écraserait des grilles existantes. */
   if (!state.groups.length && navigator.onLine && state.profile?.role === 'admin') {
     try {
-      await db('product_groups').upsert(DEFAULT_GROUPS.map(g => ({
-        id: g.id, name: g.name, position: g.position, active: true,
-        config: { ...g.config, icon: g.icon }
-      })));
-      await db('settings').upsert([{ key: 'app', value: DEFAULT_SETTINGS }]);
+      const existing = await db('product_groups').select('id').limit(1);
+      if (!existing.length) {
+        await db('product_groups').upsert(DEFAULT_GROUPS.map(g => ({
+          id: g.id, name: g.name, position: g.position, active: true,
+          config: { ...g.config, icon: g.icon }
+        })));
+        await db('settings').upsert([{ key: 'app', value: DEFAULT_SETTINGS }]);
+      }
       await sync();
       state.groups = (await local.all('groups')).sort((a, b) => (a.position || 0) - (b.position || 0));
     } catch (e) { console.warn('seed', e.message); }
@@ -118,7 +153,17 @@ function updateSyncBadge() {
   const btn = $('#syncBtn');
   if (btn && !btn.dataset.wired) {
     btn.dataset.wired = '1';
-    btn.onclick = async () => { toast('Synchronisation…'); await sync(); toast('À jour'); };
+    /* Le bouton annonçait « À jour » quoi qu'il arrive, y compris
+       quand rien n'était parti. Il dit maintenant ce qui s'est
+       réellement passé. */
+    btn.onclick = async () => {
+      if (!navigator.onLine) return toast('Hors-ligne : envoi dès le retour du réseau', 'err');
+      toast('Synchronisation…');
+      const ok = await sync();
+      const left = await pendingCount();
+      if (!ok) toast('Envoi incomplet, nouvelle tentative automatique', 'err');
+      else toast(left ? `${left} élément${left > 1 ? 's' : ''} encore en attente` : 'À jour');
+    };
   }
   const tag = $('#syncTag');
   if (!tag) return;
@@ -145,7 +190,7 @@ const routes = [
   [/^#\/stats$/,                    () => renderStats()],
   [/^#\/settings$/,                 () => renderSettings()],
   [/^#\/settings\/groups$/,         () => renderGroups()],
-  [/^#\/settings\/groups\/([\w-]+)$/, (m) => renderGroupEditor(m[1])],
+  [/^#\/settings\/groups\/([\w-]+)$/, (m) => renderGroupEditor(m[1], true)],
   [/^#\/settings\/partners$/,       () => renderPartners()],
   [/^#\/settings\/users$/,          () => renderUsers()],
   [/^#\/settings\/account$/,        () => renderAccount()]
@@ -161,11 +206,22 @@ const trail = [];
 let goingBack = false;
 
 export function route() {
+  /* Le bouton « retour » du téléphone change l'adresse sans passer par
+     l'application : une feuille modale restée ouverte laissait
+     `body{position:fixed}` en place et l'écran paraissait figé. */
+  closeSheets();
   const h = location.hash || '#/';
   if (!goingBack) {
-    /* Une même adresse répétée ne s'empile pas (redessin, filtre). */
-    if (trail[trail.length - 1] !== h) trail.push(h);
-    if (trail.length > 40) trail.shift();
+    if (trail[trail.length - 2] === h) {
+      /* Retour du navigateur ou du téléphone : on RECULE dans la pile.
+         L'empiler comme une nouvelle destination ferait repartir la
+         flèche de l'application en avant. */
+      trail.pop();
+    } else if (trail[trail.length - 1] !== h) {
+      /* Une même adresse répétée ne s'empile pas (redessin, filtre). */
+      trail.push(h);
+      if (trail.length > 40) trail.shift();
+    }
   }
   goingBack = false;
   for (const [re, fn] of routes) {
@@ -179,12 +235,15 @@ export const go = (hash) => { location.hash = hash; };
 
 /* Retour d'un écran : on dépile l'écran courant et on rejoue le
    précédent. `fallback` sert quand la pile est vide — arrivée directe
-   sur une adresse, ou rechargement de la page. */
+   sur une adresse, ou rechargement de la page.
+   L'écran d'arrivée reste dans la pile : le dépiler aussi faisait
+   sauter un niveau au deuxième appui. */
 export function back(fallback = '#/') {
   trail.pop();
-  const prev = trail.pop() || fallback;
+  let prev = trail[trail.length - 1];
+  if (!prev) { prev = fallback; trail.push(prev); }
   goingBack = true;
-  if ((location.hash || '#/') === prev) { goingBack = false; trail.push(prev); route(); }
+  if ((location.hash || '#/') === prev) route();
   else location.hash = prev;
 }
 
@@ -232,16 +291,22 @@ async function renderHome() {
         document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
         document.querySelectorAll('[data-draft]').forEach(b => {
           const d = drafts.find(x => x.id === b.dataset.draft);
-          b.onclick = () => go('#/report/new/' + d.type);
           /* Appui long : abandonner le brouillon. Le geste reste
              discret — on ne met pas une croix rouge sur un écran
-             d'accueil — mais il existe. */
-          let t;
-          const start = () => { t = setTimeout(() => dropDraft(d), 600); };
+             d'accueil — mais il existe.
+             `fired` neutralise le clic fantôme que le navigateur envoie
+             en relâchant : sans lui, l'appui long supprimait le
+             brouillon PUIS ouvrait un rapport vierge. */
+          let t, fired = false;
+          b.onclick = (e) => {
+            if (fired) { fired = false; e.preventDefault(); return; }
+            go('#/report/new/' + d.type);
+          };
+          const start = () => { fired = false; t = setTimeout(() => { fired = true; dropDraft(d); }, 600); };
           const stop  = () => clearTimeout(t);
           b.addEventListener('pointerdown', start);
           ['pointerup', 'pointerleave', 'pointercancel'].forEach(e => b.addEventListener(e, stop));
-          b.oncontextmenu = (e) => { e.preventDefault(); stop(); dropDraft(d); };
+          b.oncontextmenu = (e) => { e.preventDefault(); stop(); fired = true; dropDraft(d); };
         });
       } });
 }
@@ -264,9 +329,14 @@ async function dropDraft(d) {
   const copy = { ...d };
   await local.del('reports', d.id);
   renderHome();
-  toast('Brouillon supprimé', '', { action: 'Annuler', onAction: async () => {
-    await local.put('reports', copy); renderHome();
-  } });
+  toast('Brouillon supprimé', '', {
+    action: 'Annuler',
+    onAction: async () => { await local.put('reports', copy); renderHome(); },
+    /* Les photos ne partent qu'une fois l'annulation devenue
+       impossible : les effacer tout de suite rendrait le bouton
+       « Annuler » mensonger. */
+    onExpire: () => forgetPhotos((copy.photos || []).map(p => p.localId))
+  });
 }
 
 /* =========================== AUTHENTIFICATION =========================== */
@@ -303,8 +373,10 @@ function renderAuth(mode = 'login') {
   if (forgot) forgot.onclick = async () => {
     const email = $('#e').value.trim();
     if (!email) return toast('Saisissez votre e-mail', 'err');
-    await auth.resetPassword(email);
-    toast('E-mail de réinitialisation envoyé');
+    try {
+      await auth.resetPassword(email);
+      toast('E-mail de réinitialisation envoyé');
+    } catch (e) { toast(e.message, 'err'); }
   };
 
   $('#f').onsubmit = async (ev) => {
@@ -347,12 +419,23 @@ function renderPending() {
     </div></div></main>`;
   logoDataUrl().then(u => { const l = $('#lg'); if (l && u) l.src = u; });
   $('#again').onclick = () => boot();
-  $('#out').onclick = () => { auth.signOut(); location.hash = ''; renderAuth(); };
+  $('#out').onclick = () => logout();
 }
 
-export function logout() {
-  auth.signOut();
-  local.meta('profile', null);
+/* Une déconnexion doit vraiment vider l'appareil : les rapports, le
+   carnet, les grilles et les brouillons restaient en base locale, et
+   le collègue qui se connectait ensuite sur le même téléphone ouvrait
+   l'application sur les données du précédent. */
+export async function logout() {
+  try { await auth.signOut(); } catch (e) { /* le jeton local part quand même */ }
+  try {
+    await local.meta('profile', null);
+    await local.meta('lastSync', null);
+    for (const s of ['reports', 'partners', 'groups', 'outbox', 'photos']) {
+      try { await local.clear(s); } catch (e) {}
+    }
+  } catch (e) { console.warn('logout', e); }
+  state.profile = null; state.groups = []; state.partners = [];
   location.hash = '';
   location.reload();
 }

@@ -34,7 +34,11 @@ const EMBALLAGE = {
 const PALETTISATION = {
   id: 'palettisation', label: 'Palettisation',
   fields: [
-    { key: 'pal_count', label: 'Nombre de palettes', type: 'num', step: 0.01 },
+    /* Le pas de 0,01 sert à saisir une demi-palette dans le détail du
+       lot, mais un COMPTAGE ne s'imprime pas avec deux décimales :
+       « 12.00 palettes » dans un rapport client était une coquille.
+       Le pas d'affichage reste donc au dixième. */
+    { key: 'pal_count', label: 'Nombre de palettes', type: 'num', step: 0.1 },
     { key: 'col_count', label: 'Nombre de colis',   type: 'num', step: 1 },
     { key: 'pal_state', label: 'État palettisation', type: 'choice', severity: 'mineur',
       options: [ {v:'Bonne', s:'ok'}, {v:'Acceptable', s:'warn'}, {v:'Mauvaise', s:'fail'} ] }

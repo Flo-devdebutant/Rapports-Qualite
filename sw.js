@@ -8,7 +8,7 @@
    Changer CACHE ci-dessous suffit à déployer une nouvelle version.
    ------------------------------------------------------------------ */
 
-const CACHE = 'mehadrin-qc-v11';
+const CACHE = 'mehadrin-qc-v13';
 
 const SHELL = [
   './', './index.html', './manifest.webmanifest', './logo.svg', './app.css',
@@ -18,8 +18,24 @@ const SHELL = [
   './icon-192.png', './icon-512.png', './icon-maskable.png'
 ];
 
+/* `addAll` est tout ou rien : une seule icône manquante et l'ensemble
+   de la coquille reste hors cache — l'application ne s'ouvrait alors
+   pas du tout hors réseau, sans le moindre indice. On met donc chaque
+   entrée en cache séparément et on journalise celles qui échouent. */
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil((async () => {
+    const c = await caches.open(CACHE);
+    const missing = [];
+    await Promise.all(SHELL.map(async (u) => {
+      try {
+        const r = await fetch(u, { cache: 'reload' });
+        if (!r.ok) throw new Error(r.status);
+        await c.put(u, r);
+      } catch (err) { missing.push(u); }
+    }));
+    if (missing.length) console.warn('[sw] non mis en cache :', missing);
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', (e) => {
@@ -37,6 +53,15 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;   // Supabase & co : réseau direct
 
+  /* Le repli « index.html » ne vaut QUE pour une navigation. Servi à
+     la place d'un script, d'une feuille de style ou du logo, il
+     produisait des dégâts silencieux : logo.js mettait la page HTML en
+     cache mémoire comme si c'était le SVG du logo, et tous les PDF
+     partaient chez le client avec un en-tête cassé. Une sous-ressource
+     absente doit échouer franchement. */
+  const isNav = request.mode === 'navigate' ||
+    (request.destination === '' && request.headers.get('accept')?.includes('text/html'));
+
   e.respondWith(
     caches.match(request).then(hit => {
       const net = fetch(request)
@@ -44,7 +69,14 @@ self.addEventListener('fetch', (e) => {
           if (res.ok) caches.open(CACHE).then(c => c.put(request, res.clone()));
           return res;
         })
-        .catch(() => hit || caches.match('./index.html'));
+        .catch(async () => {
+          if (hit) return hit;
+          if (isNav) {
+            const shell = await caches.match('./index.html');
+            if (shell) return shell;
+          }
+          return new Response('', { status: 504, statusText: 'Hors ligne' });
+        });
       return hit || net;
     })
   );

@@ -270,6 +270,30 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .crit .in input[type=number]::-webkit-outer-spin-button,
 .crit .in input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
 
+/* ------------------- ordre et masquage de la grille -------------------
+   Deux flèches par ligne plutôt qu'un glisser-déposer : sur téléphone,
+   à une main, c'est le seul geste fiable. Cibles de 30 px de haut, soit
+   un doigt, empilées pour tenir dans la largeur d'une ligne de critère. */
+.ord{display:flex;flex-direction:column;gap:2px;flex:0 0 auto}
+.ordb{
+  width:30px;height:19px;border:1px solid var(--line);border-radius:6px;background:var(--card);
+  color:var(--ink-2);font-size:9px;line-height:1;cursor:pointer;padding:0;
+  display:grid;place-items:center
+}
+.ordb:disabled{opacity:.3;cursor:default}
+.ordb.wide{width:34px;height:34px;font-size:15px}
+.ord + .dot{margin-left:2px}
+.btn-row .ord{flex-direction:row;gap:4px}
+.btn-row .ordb{height:34px;width:34px;font-size:11px}
+
+/* Masqué, pas supprimé : l'élément reste lisible et récupérable, mais
+   on voit d'un coup d'œil qu'il ne sortira dans aucun rapport. Le
+   grisé ne porte jamais seul l'information — une étiquette en toutes
+   lettres l'accompagne, et la touche œil dit quoi faire. */
+.crit.off > .lb,.crit.off > .dot{opacity:.45}
+details.sec.off > summary{opacity:.55}
+.crit .pill.sm,.sec > summary .pill.sm{flex:0 0 auto}
+
 .seg{display:flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .seg button{flex:1;min-height:40px;border:0;background:var(--card);cursor:pointer;font-size:13.5px;font-weight:600;color:var(--ink-2)}
 .seg button + button{border-left:1px solid var(--line)}
@@ -300,6 +324,12 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .photo-grid .ph button{
   position:absolute;top:4px;right:4px;width:26px;height:26px;border:0;border-radius:50%;
   background:rgba(0,0,0,.62);color:#fff;font-size:15px;line-height:1;cursor:pointer
+}
+/* Photo déjà envoyée au serveur mais hors de portée : on le dit, au
+   lieu de laisser une vignette cassée sans explication. */
+.photo-grid .ph .ph-miss{
+  position:absolute;inset:0;display:grid;place-items:center;padding:8px;
+  font-size:10.5px;line-height:1.3;text-align:center;color:var(--ink-3)
 }
 .photo-add{
   display:grid;place-items:center;aspect-ratio:1;border:1.6px dashed var(--line);border-radius:10px;
@@ -391,7 +421,24 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .bars .b .nm{flex:0 0 40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2)}
 .bars .b .tr{flex:1;height:8px;border-radius:5px;background:var(--line-2);overflow:hidden}
 .bars .b .tr i{display:block;height:100%;border-radius:5px;background:var(--orange)}
-.bars .b .vl{flex:0 0 52px;text-align:right;color:var(--ink-3);font-variant-numeric:tabular-nums}
+/* Trois paliers de gravité. Le motif double la couleur : hachuré serré
+   pour le critique, hachuré large pour la surveillance, plein pour ce
+   qui va bien. Un lecteur daltonien, ou une impression en noir et
+   blanc, lisent le niveau au motif et au libellé qui l'accompagne. */
+.bars .b .tr i.lv-ok{background:#0ca30c}
+.bars .b .tr i.lv-warn{
+  background:repeating-linear-gradient(135deg,#fab219 0 5px,#e09a05 5px 10px)
+}
+.bars .b .tr i.lv-fail{
+  background:repeating-linear-gradient(135deg,#d03b3b 0 3px,#a32222 3px 6px)
+}
+.bars .b .vl{flex:0 0 auto;min-width:52px;text-align:right;color:var(--ink-3);font-variant-numeric:tabular-nums;font-size:11.5px}
+@media (max-width:430px){
+  .bars .b{flex-wrap:wrap}
+  .bars .b .nm{flex:1 1 60%}
+  .bars .b .vl{flex:0 0 auto;order:2}
+  .bars .b .tr{flex:1 1 100%;order:3}
+}
 
 /* ------------------------ graphique de pression ------------------------
    Couleurs validées par l'outil de contrôle de la charte data-viz :

@@ -70,6 +70,9 @@ export async function sync({ silent = false } = {}) {
     await push();
     await pull();
     await local.meta('lastSync', Date.now());
+    /* Ménage des binaires orphelins une fois la file vidée : pas avant,
+       sinon on effacerait une photo qui n'est pas encore partie. */
+    try { if (!(await pendingCount())) await sweepPhotos(); } catch (e) {}
     emit('done');
     return true;
   } catch (e) {
@@ -79,70 +82,149 @@ export async function sync({ silent = false } = {}) {
   } finally { syncing = false; }
 }
 
+/* Un élément que le serveur a refusé définitivement (droits, donnée
+   invalide) est mis de côté plutôt que rejeté : il reste visible dans
+   la file, il ne bloque pas les suivants, et surtout il n'est jamais
+   détruit sans que personne ne le sache. Un élément qui échoue pour
+   cause de réseau, lui, est simplement réessayé — indéfiniment, parce
+   qu'un quai sans couverture n'est pas une raison de perdre un
+   rapport. */
 async function push() {
-  const items = (await local.all('outbox')).sort((a, b) => a.at - b.at);
+  const items = (await local.all('outbox'))
+    .filter(i => !i.blocked)
+    .sort((a, b) => a.at - b.at);
+  let firstError = null;
+
   for (const item of items) {
     try {
       if (item.kind === 'report') {
         const report = await local.get('reports', item.payload.id);
         if (!report) { await local.del('outbox', item.id); continue; }
         await uploadPhotos(report);
-        const { _dirty, _localPhotos, ...row } = report;
+        const { _dirty, _localPhotos, _draft, _draftAt, ...row } = report;
         await db('reports').upsert([row]);
         await local.put('reports', { ...report, _dirty: false });
       } else if (item.kind === 'partner') {
         await db('partners').upsert([item.payload]);
       } else if (item.kind === 'group') {
         await db('product_groups').upsert([item.payload]);
+      } else if (item.kind === 'deletePartner') {
+        await db('partners').eq('id', item.payload.id).remove();
       } else if (item.kind === 'deleteReport') {
         await db('reports').eq('id', item.payload.id).update({ deleted: true });
       }
       await local.del('outbox', item.id);
     } catch (e) {
-      // Un échec de droits ne se résoudra pas en réessayant : on
-      // abandonne l'élément après 5 tentatives pour ne pas bloquer
-      // toute la file derrière lui.
       item.tries = (item.tries || 0) + 1;
-      if (item.tries >= 5) await local.del('outbox', item.id);
-      else await local.put('outbox', item);
-      throw e;
+      item.lastError = e.message;
+      /* Refus définitif : on le marque et on passe au suivant, la file
+         ne doit pas se figer derrière lui. */
+      if (e.permanent || e.auth) item.blocked = true;
+      await local.put('outbox', item);
+      if (!firstError) firstError = e;
+      if (e.auth) break;                 // plus rien ne passera tant que la session est morte
     }
+  }
+  if (firstError) throw firstError;
+}
+
+/* Éléments que le serveur a refusés et qui attendent une décision. */
+export async function blockedItems() {
+  return (await local.all('outbox')).filter(i => i.blocked);
+}
+
+export async function retryBlocked() {
+  for (const i of await blockedItems()) {
+    delete i.blocked; i.tries = 0;
+    await local.put('outbox', i);
   }
 }
 
 async function uploadPhotos(report) {
   const photos = report.photos || [];
+  const gone = [];
   for (const p of photos) {
     if (p.uploaded || !p.localId) continue;
     const rec = await local.get('photos', p.localId);
-    if (!rec) { p.uploaded = true; continue; }
+    if (!rec) {
+      /* Le fichier a disparu du cache (nettoyage du navigateur, base
+         vidée). Le marquer « envoyé » écrivait un mensonge dans la
+         base : le rapport annonçait une photo que le stockage n'a
+         jamais reçue, et le PDF sortait avec une case vide. On retire
+         la ligne — c'est la seule chose vraie. */
+      gone.push(p);
+      continue;
+    }
     await storage.upload(p.path, rec.blob, 'image/jpeg');
     p.uploaded = true;
+    /* Une fois chez Supabase, le binaire local n'a plus de raison
+       d'occuper la place : il se retélécharge à la demande. */
+    await local.del('photos', p.localId).catch(() => {});
+  }
+  if (gone.length) {
+    report.photos = photos.filter(p => !gone.includes(p));
+    report.photos_lost = (report.photos_lost || 0) + gone.length;
   }
   await local.put('reports', report);
+}
+
+/* Binaires locaux devenus inutiles : brouillon abandonné, rapport
+   supprimé, photo retirée d'un rapport. Sans ce ménage, la base locale
+   d'un téléphone grossissait indéfiniment. */
+export async function forgetPhotos(ids = []) {
+  for (const id of ids) { if (id) await local.del('photos', id).catch(() => {}); }
+}
+
+/* Passe de rattrapage : tout blob qui n'est plus référencé par aucun
+   rapport de l'appareil. Appelée après une synchronisation. */
+export async function sweepPhotos() {
+  const used = new Set();
+  for (const r of await local.all('reports'))
+    for (const p of r.photos || []) if (p.localId) used.add(p.localId);
+  let freed = 0;
+  for (const rec of await local.all('photos'))
+    if (!used.has(rec.id)) { await local.del('photos', rec.id).catch(() => {}); freed++; }
+  return freed;
 }
 
 async function pull() {
   const since = (await local.meta('serverCursor')) || '1970-01-01T00:00:00Z';
   const rows = await db('reports').select('*').gte('updated_at', since).order('updated_at', true).limit(500);
-  let cursor = since;
+  let cursor = since, held = null;
   for (const row of rows) {
     const existing = await local.get('reports', row.id);
-    if (existing?._dirty) continue;              // priorité à la saisie locale non encore poussée
+    if (existing?._dirty) {
+      /* Priorité à la saisie locale non encore poussée. Mais le
+         curseur ne doit pas franchir cette ligne, sinon la version
+         serveur ne sera plus jamais reproposée une fois la nôtre
+         partie. */
+      if (!held || row.updated_at < held) held = row.updated_at;
+      continue;
+    }
     if (row.deleted) await local.del('reports', row.id);
     else await local.put('reports', { ...row, _dirty: false });
     if (row.updated_at > cursor) cursor = row.updated_at;
   }
+  if (held && held <= cursor) cursor = since;
   await local.meta('serverCursor', cursor);
 
   const [partners, groups] = await Promise.all([
     db('partners').select('*').order('name', true),
     db('product_groups').select('*').order('position', true)
   ]);
-  await local.clear('partners');
-  for (const p of partners) await local.put('partners', p);
-  await local.clear('groups');
-  for (const g of groups) await local.put('groups', g);
+  /* Une réponse vide n'efface rien. Sous RLS, une requête mal
+     authentifiée répond « 200, aucune ligne » : prendre ce vide pour
+     la vérité effacerait le catalogue produits et le carnet
+     d'adresses de l'appareil, et l'inspecteur ne pourrait plus rien
+     saisir hors ligne. */
+  if (partners.length) {
+    await local.clear('partners');
+    for (const p of partners) await local.put('partners', p);
+  }
+  if (groups.length) {
+    await local.clear('groups');
+    for (const g of groups) await local.put('groups', g);
+  }
 }
 
 /* Relance la synchro dès le retour du réseau et toutes les 2 min. */
