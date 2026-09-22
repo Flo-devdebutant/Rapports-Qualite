@@ -9,7 +9,7 @@
 
 import { state, shell, groupById, go, back } from './app.js';
 import { local, queue, sync, forgetPhotos } from './store.js';
-import { flatFields, fieldStatus, computeSummary, applyComputed,
+import { flatFields, fieldStatus, computeSummary, applyComputed, fieldRole, PRESSURE_ROLES,
          VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { COUNTRIES_FR, countryName } from './countries.js';
 import { pressureConfig, palletStats, lotStats, hasPressures, fmtP,
@@ -17,7 +17,8 @@ import { pressureConfig, palletStats, lotStats, hasPressures, fmtP,
          refSpec, partnerRef, palletSeverity, refText, outOfZone,
          SEV_COLOR, SEV_LABEL, SEV_STEPS, RANGE_TOL, LIMITS, clampP } from './pressure.js';
 import { pressureChartSVG } from './pressure-chart.js';
-import { reportType, PACKAGING_KINDS, appliesTo, isHidden, fieldLive } from './report-types.js';
+import { reportType, PACKAGING_KINDS, appliesTo, isHidden, fieldLive,
+         badPallets, badPalletsText, splitPallets } from './report-types.js';
 import { $, $$, esc, icon, toast, confirmSheet, compressImage, stars, pickSheet } from './ui.js';
 import { currentUser, storage } from './supa.js';
 
@@ -99,7 +100,7 @@ function paint() {
   const T = reportType(draft.type);
   const isRec = draft.type === 'reception';
   const choices = groupChoices(T);
-  draft.measures = applyComputed(group, draft.measures);
+  draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
   draft.summary = computeSummary(group, draft.measures, draft.header.pressures, draft.type);
   const s = draft.summary;
 
@@ -192,8 +193,17 @@ function paint() {
               `<option${k === draft.header.packaging_kind ? ' selected' : ''}>${esc(k)}</option>`).join('')}
           </select></div>` : ''}
 
-        <div class="field span2"><label for="fbad">Palette problématique</label>
-          <input type="text" id="fbad" value="${esc(draft.header.bad_pallet || '')}" placeholder="N° de la palette en cause"></div>
+        <!-- Une seule palette ne suffisait pas : un conteneur peut en
+             avoir trois de travers, et on ne pouvait en signaler
+             qu'une. La saisie accepte donc plusieurs numéros, et le
+             NOMBRE se déduit — c'est lui qui pèse dans le résumé, le
+             détail servant à nommer les palettes au fournisseur. -->
+        <div class="field span2"><label for="fbad">Palettes problématiques</label>
+          <input type="text" id="fbad" inputmode="text" autocomplete="off"
+            value="${esc(badPallets(draft.header).join(', '))}"
+            placeholder="N° des palettes en cause, séparés par des virgules">
+          <div class="chips" id="badPick" style="margin-top:8px"></div>
+          <div class="hint" id="badCount">${badPalletsText(draft.header)}</div></div>
       </div>
     </details>
 
@@ -284,7 +294,13 @@ function fieldHtml(f) {
   const v = draft.measures[f.key];
   const st = fieldStatus(f, v);
   const dot = `<span class="dot ${st || 'none'}" data-dot="${esc(f.key)}"></span>`;
-  const hint = f.hint ? `<small>${esc(f.hint)}</small>` : '';
+  /* Dureté et stade de mûrissement se déduisent du contrôle par
+     palette : on le dit, et on verrouille la saisie tant que des
+     pressions sont relevées. Un champ qu'on peut taper mais qui se
+     réécrit à la mesure suivante est pire qu'un champ fermé. */
+  const auto = PRESSURE_ROLES.includes(fieldRole(f)) && !!lotStats(draft.header.pressures);
+  const hint = auto ? '<small>Repris du contrôle par palette</small>'
+                    : (f.hint ? `<small>${esc(f.hint)}</small>` : '');
   const label = `<span class="lb">${esc(f.label)}${f.unit && f.type !== 'choice' && f.type !== 'bool' ? ` <span class="muted">(${esc(f.unit)})</span>` : ''}${hint}</span>`;
 
   if (f.type === 'bool') {
@@ -296,14 +312,15 @@ function fieldHtml(f) {
   }
   if (f.type === 'choice') {
     return `<div class="crit wide" data-key="${esc(f.key)}">${dot}${label}
-      <span class="in"><select><option value="">—</option>
+      <span class="in"><select${auto ? ' disabled' : ''}><option value="">—</option>
         ${f.options.map(o => `<option value="${esc(o.v)}"${o.v === v ? ' selected' : ''}>${esc(o.v)}</option>`).join('')}
       </select></span></div>`;
   }
   const computed = !!f.computed;
   return `<div class="crit" data-key="${esc(f.key)}">${dot}${label}
     <span class="in"><input type="number" inputmode="decimal" step="${f.step || 0.01}"
-      value="${v ?? ''}" placeholder="—"${computed ? ' data-computed="1"' : ''}></span></div>`;
+      value="${v ?? ''}" placeholder="—"${computed ? ' data-computed="1"' : ''}${
+      auto ? ' readonly data-auto="1"' : ''}></span></div>`;
 }
 
 /* --------------------------- interactions --------------------------- */
@@ -342,6 +359,17 @@ function wire() {
   const loadEl = $('#fload');
   if (loadEl) loadEl.oninput = (e) => set('voyage', e.target.value);
   $('#flot').oninput     = (e) => set(reportType(draft.type).refKey, e.target.value);
+
+  /* Palettes problématiques : saisie libre, normalisée à la sortie du
+     champ, et rappel des palettes déjà contrôlées pour les désigner
+     d'une touche — celles hors référence en tête, ce sont les
+     candidates naturelles. */
+  const bad = $('#fbad');
+  if (bad) {
+    bad.oninput = () => { setBad(splitPallets(bad.value)); paintBadPick(); };
+    bad.onblur  = () => { bad.value = badPallets(draft.header).join(', '); };
+    paintBadPick();
+  }
   const packEl = $('#fpack');
   if (packEl) packEl.onchange = (e) => {
     set('packaging_kind', e.target.value);
@@ -350,7 +378,6 @@ function wire() {
        fermeté qu'un vrac. */
     if (draft.header.pressures && applyClientRef()) paintPressures();
   };
-  $('#fbad').oninput     = (e) => set('bad_pallet', e.target.value);
   $('#fcat').onchange    = (e) => set('category', e.target.value);
   $('#fremarks').oninput = (e) => { draft.remarks = e.target.value; touch(); };
 
@@ -585,7 +612,7 @@ function syncCalibreTotals() {
 /* Recalcule la pastille du champ modifié + les valeurs dérivées. */
 function refresh(changedKey) {
   const group = groupById(draft.product_group_id);
-  draft.measures = applyComputed(group, draft.measures);
+  draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
 
   for (const f of flatFields(group, draft.type)) {
     const dot = document.querySelector(`[data-dot="${CSS.escape(f.key)}"]`);
@@ -611,8 +638,52 @@ function refresh(changedKey) {
 /* Le verdict se recalcule aussi bien sur un critère que sur une
    pression : une palette qui s'écarte de la référence change
    l'évaluation, l'inspecteur doit le voir au moment où il la saisit. */
+/* Une pression saisie change la dureté et le stade de mûrissement.
+   On met ces champs à jour SUR PLACE plutôt que de redessiner la
+   section : redessiner ferait perdre le focus au beau milieu d'un
+   relevé, et l'inspecteur saisit dix mesures d'affilée. */
+function syncPressureFields() {
+  const group = groupById(draft.product_group_id);
+  const auto = !!lotStats(draft.header.pressures);
+  for (const f of flatFields(group, draft.type)) {
+    if (!PRESSURE_ROLES.includes(fieldRole(f))) continue;
+    const row = document.querySelector(`.crit[data-key="${CSS.escape(f.key)}"]`);
+    if (!row) continue;
+    const el = row.querySelector('input,select');
+    const v = draft.measures[f.key];
+    if (el) {
+      if (document.activeElement !== el) el.value = v ?? '';
+      if (el.tagName === 'SELECT') el.disabled = auto;
+      else { el.readOnly = auto; el.toggleAttribute('data-auto', auto); }
+    }
+    const small = row.querySelector('.lb small');
+    if (auto && small) small.textContent = 'Repris du contrôle par palette';
+    else if (auto && !small) row.querySelector('.lb')
+      ?.insertAdjacentHTML('beforeend', '<small>Repris du contrôle par palette</small>');
+    const dot = row.querySelector('[data-dot]');
+    if (dot) dot.className = 'dot ' + (fieldStatus(f, v) || 'none');
+  }
+  refreshCounts(group);
+  paintBadPick();          // les palettes contrôlées viennent d'évoluer
+}
+
+/* Décomptes « 3/8 » de chaque section, après une mise à jour qui n'est
+   passée par aucun champ en particulier. */
+function refreshCounts(group) {
+  for (const sec of document.querySelectorAll('details.sec[data-sec]')) {
+    const def = (group?.config?.sections || []).find(s => s.id === sec.dataset.sec);
+    if (!def) continue;
+    const fs = (def.fields || []).filter(f => fieldLive(def, f, draft.type));
+    const done = fs.filter(f => draft.measures[f.key] !== undefined && draft.measures[f.key] !== '').length;
+    const c = sec.querySelector('.count');
+    if (c) c.textContent = `${done}/${fs.length}`;
+  }
+}
+
 function refreshVerdict() {
   const group = groupById(draft.product_group_id);
+  draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
+  syncPressureFields();
   draft.summary = computeSummary(group, draft.measures, draft.header.pressures, draft.type);
   const box = $('#verdict');
   if (box) box.innerHTML = verdictHtml(draft.summary);
@@ -670,6 +741,42 @@ async function paintPhotos() {
     grid.appendChild(add);
   }
   const c = $('#phCount'); if (c) c.textContent = draft.photos.length;
+}
+
+/* ------------------- palettes problématiques ------------------- */
+function setBad(list) {
+  draft.header.bad_pallets = list;
+  draft.header.bad_pallet = list.join(', ');   // compatibilité
+  const c = $('#badCount'); if (c) c.textContent = badPalletsText(draft.header);
+  touch();
+}
+
+/* Les palettes déjà contrôlées, proposées en puces. Celles dont la
+   moyenne sort de la référence viennent en premier. */
+function paintBadPick() {
+  const box = $('#badPick');
+  if (!box) return;
+  const p = draft.header.pressures;
+  const sp = spec();
+  const rows = (p?.pallets || []).map(pal => {
+    const st = palletStats(pal);
+    const sev = st ? palletSeverity(st.avg, sp) : null;
+    return { n: String(pal.n ?? '').trim(), lvl: sev?.level || 'ok' };
+  }).filter(x => x.n);
+  if (!rows.length) { box.innerHTML = ''; return; }
+  const rank = { critique: 0, majeur: 1, mineur: 2, ok: 3 };
+  rows.sort((a, b) => (rank[a.lvl] ?? 3) - (rank[b.lvl] ?? 3));
+  const on = badPallets(draft.header);
+  box.innerHTML = rows.map(r => `<button type="button" class="chip" data-bad="${esc(r.n)}"
+    aria-pressed="${on.includes(r.n)}">Palette ${esc(r.n)}${
+    r.lvl !== 'ok' ? ` · ${esc(SEV_LABEL[r.lvl].toLowerCase())}` : ''}</button>`).join('');
+  box.querySelectorAll('[data-bad]').forEach(b => b.onclick = () => {
+    const n = b.dataset.bad;
+    const cur = badPallets(draft.header);
+    setBad(cur.includes(n) ? cur.filter(x => x !== n) : [...cur, n]);
+    const inp = $('#fbad'); if (inp) inp.value = badPallets(draft.header).join(', ');
+    paintBadPick();
+  });
 }
 
 /* ------------------------------ brouillon ------------------------------
@@ -746,7 +853,7 @@ async function save() {
     if (draft.header.pressures && !hasPressures(draft.header)) delete draft.header.pressures;
 
     const group = groupById(draft.product_group_id);
-    draft.measures = applyComputed(group, draft.measures);
+    draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
     draft.summary = computeSummary(group, draft.measures, draft.header.pressures, draft.type);
     draft.criteria_snapshot = group?.config || null;   // fige la grille utilisée : un rapport reste lisible même si les seuils changent plus tard
     draft.inspector_name = state.profile?.full_name || '';

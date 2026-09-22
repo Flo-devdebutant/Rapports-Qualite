@@ -404,6 +404,7 @@ function renderAuth(mode = 'login') {
   };
 }
 
+let pendingTimer = null;
 function renderPending() {
   $('#app').innerHTML = `<main><div class="auth-wrap">
     <img class="auth-logo" alt="Mehadrin" src="" id="lg">
@@ -420,6 +421,23 @@ function renderPending() {
   logoDataUrl().then(u => { const l = $('#lg'); if (l && u) l.src = u; });
   $('#again').onclick = () => boot();
   $('#out').onclick = () => logout();
+
+  /* L'administrateur valide depuis son poste, à l'autre bout du
+     bâtiment : sans cette vérification automatique, le collègue reste
+     devant un sablier jusqu'à ce que quelqu'un pense à lui dire de
+     toucher le bouton. On regarde toutes les vingt secondes, et on
+     entre dès que l'accès est ouvert. */
+  clearInterval(pendingTimer);
+  pendingTimer = setInterval(async () => {
+    if (document.hidden || !navigator.onLine) return;
+    if (!document.getElementById('again')) { clearInterval(pendingTimer); return; }
+    try {
+      const u = currentUser();
+      if (!u) return;
+      const rows = await db('profiles').select('approved').eq('id', u.id);
+      if (rows[0]?.approved) { clearInterval(pendingTimer); boot(); }
+    } catch (e) { /* hors ligne ou serveur muet : on réessaiera */ }
+  }, 20000);
 }
 
 /* Une déconnexion doit vraiment vider l'appareil : les rapports, le

@@ -4,7 +4,8 @@ import { state, shell, go, back, loadRefs, logout } from './app.js';
 import { local, queue, sync, pendingCount } from './store.js';
 import { db, auth } from './supa.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
-import { fieldStatus, FIELD_ROLES, fieldRole, effSeverity } from './verdict.js';
+import { fieldStatus, FIELD_ROLES, fieldRole, effSeverity, flatFields,
+         verdictCfg, ripenessBands } from './verdict.js';
 import { allDrafts } from './form.js';
 import { LANGS, builtinTranslation } from './report-pdf.js';
 import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS, LIMITS, clampP } from './pressure.js';
@@ -303,6 +304,18 @@ export function renderGroupEditor(id, fresh = false) {
       <div class="wgrid">${weightsHtml(cfg)}</div>
     </div>
 
+    <!-- Les trois indices du rapport reposaient sur des seuils écrits
+         dans le code. « Mauvaise à partir de 3 défauts » n'est pas une
+         vérité universelle : c'est une décision de l'entreprise, qui
+         change d'un produit à l'autre. -->
+    <div class="card pad" style="margin-top:12px">
+      <h3 style="font-size:14.5px;margin-bottom:4px">Les trois indices du verdict</h3>
+      <p class="muted" style="margin:0 0 12px">Qualité, Conservabilité et Évaluation se calculent
+        à partir des critères notés. Voici à partir de quand chacun bascule.</p>
+      <button class="btn ghost block" id="verdictBtn">${icon('gear')} Régler le barème des indices</button>
+      <div class="hint" id="verdictSum" style="margin-top:8px">${verdictSummary(g)}</div>
+    </div>
+
     <h3 style="margin:18px 0 6px;font-size:15px">La grille de contrôle</h3>
     <p class="muted" style="margin:0 0 10px;font-size:12.5px">Les critères sont rangés par section.
       Touchez un critère pour changer son barème ; touchez « Critère » pour en ajouter un.</p>
@@ -552,6 +565,7 @@ export function renderGroupEditor(id, fresh = false) {
             await saveGroup(g); renderGroupEditor(id);
           } });
         });
+        $('#verdictBtn').onclick = () => editVerdict(g, () => renderGroupEditor(id));
         $('#addsec').onclick = () => editSection(g, -1);
         $$('[data-editsec]').forEach(el => el.onclick = () => editSection(g, +el.dataset.editsec));
         /* Une suppression passe par la file d'attente comme tout le
@@ -582,6 +596,147 @@ export function renderGroupEditor(id, fresh = false) {
           readHeader();
           toast(await saveGroup(g) ? 'Enregistré' : 'Enregistré · envoi à la reconnexion');
           go('#/settings/groups');
+        };
+      } });
+}
+
+/* ==================== BARÈME DES TROIS INDICES ====================
+   Écrit en comptages — « à partir de 3 défauts » — et non en points :
+   c'est la façon dont un responsable qualité formule sa règle, et il
+   doit pouvoir la relire sans traduction. */
+function verdictSummary(g) {
+  const c = verdictCfg(g);
+  const bands = ripenessBands(g).length;
+  return `Mauvaise à partir de ${c.quality.badFails} défauts · Minimale à partir de ${c.shelf.lowFails} · ` +
+         `${bands ? `${bands} paliers de maturité` : 'aucun palier de maturité'}.`;
+}
+
+function editVerdict(g, after) {
+  const c = verdictCfg(g);
+  const ripeField = flatFields(g).find(f => fieldRole(f) === 'ripeness');
+  let bands = structuredClone(ripenessBands(g));
+
+  const num = (id, v, step = 1) =>
+    `<input type="number" id="${id}" min="0" step="${step}" value="${v}">`;
+
+  sheet('Barème des indices', `
+    <div class="scale-box">
+      <h4>Qualité</h4>
+      <div class="srow"><span class="sdot fail"></span><b>Mauvaise</b>
+        <span>à partir de ${num('qBad', c.quality.badFails)} défauts — ou 1 défaut critique</span></div>
+      <div class="srow"><span class="sdot warn"></span><b>Moyenne</b>
+        <span>à partir de ${num('qMidF', c.quality.midFails)} défauts,
+        ou ${num('qMidW', c.quality.midWarns)} points à surveiller</span></div>
+      <div class="srow"><span class="sdot ok"></span><b>Bonne</b><span>en dessous</span></div>
+    </div>
+
+    <div class="scale-box" style="margin-top:14px">
+      <h4>Conservabilité</h4>
+      <p class="hint" style="margin:0 0 8px">Comptent ici : les critères dont le rôle est
+        « compte pour la conservabilité », la dureté moyenne, le stade de mûrissement,
+        les écarts de pression et le niveau de maturité du lot.</p>
+      <div class="srow"><span class="sdot fail"></span><b>Minimale</b>
+        <span>à partir de ${num('sLow', c.shelf.lowFails)} défauts</span></div>
+      <div class="srow"><span class="sdot warn"></span><b>Moyenne</b>
+        <span>à partir de ${num('sMidF', c.shelf.midFails)} défauts,
+        ou ${num('sMidW', c.shelf.midWarns)} points à surveiller</span></div>
+      <div class="srow"><span class="sdot ok"></span><b>Élevée</b><span>en dessous</span></div>
+    </div>
+
+    <div class="scale-box" style="margin-top:14px">
+      <h4>Ce que vaut un écart de pression</h4>
+      <p class="hint" style="margin:0 0 8px">Pour la conservabilité. Seul l'écart le plus grave du lot compte.</p>
+      ${['critique', 'majeur', 'mineur'].map(l => `
+        <div class="srow"><span class="sdot ${l === 'mineur' ? 'warn' : 'fail'}"></span>
+          <b>Écart ${l}</b>
+          <span>${num('p_' + l + '_f', c.press[l].fail)} défauts
+                et ${num('p_' + l + '_w', c.press[l].warn)} à surveiller</span></div>`).join('')}
+    </div>
+
+    <div class="scale-box" style="margin-top:14px">
+      <h4>Évaluation</h4>
+      <div class="srow"><span class="sdot fail"></span><b>Non Conforme</b>
+        <span>%NC au-delà de la tolérance (${g.config?.tolerance ?? 10} %), ou 1 défaut critique</span></div>
+      <div class="srow"><span class="sdot warn"></span><b>Acceptable</b>
+        <span>à partir de ${num('eAcc', Math.round((c.eval.acceptable || 0.7) * 100))} % de la tolérance,
+        ou 1 défaut</span></div>
+      <div class="srow"><span class="sdot ok"></span><b>Conforme</b><span>en dessous</span></div>
+    </div>
+
+    <!-- La maturité du lot : c'est elle qui manquait. Un lot relevé à
+         4 kg est mûr et ne tiendra pas, que le client l'ait demandé
+         ainsi ou non — l'écart à la référence ne le dit pas. -->
+    <div class="scale-box" style="margin-top:14px">
+      <h4>Maturité du lot, d'après la moyenne des pressions</h4>
+      ${ripeField
+        ? `<p class="hint" style="margin:0 0 8px">Remplit « ${esc(ripeField.label)} » tout seul,
+             et pèse sur la conservabilité. De la plus ferme à la plus mûre.</p>
+           <div id="bandRows"></div>`
+        : `<p class="hint" style="margin:0">Aucun critère ne porte le rôle
+             « Stade de mûrissement » dans cette grille : réglez-le sur un critère de type
+             « choix dans une liste » pour activer ce palier.</p>`}
+    </div>
+
+    <div class="btn-row" style="margin-top:16px">
+      <button class="btn ghost" style="flex:1" id="cancel">Annuler</button>
+      <button class="btn" style="flex:2" id="ok">Enregistrer</button>
+    </div>
+    <button class="btn ghost block" id="reset" style="margin-top:10px">Revenir au barème par défaut</button>`,
+    { onMount(el, close) {
+        const $$$ = (s) => el.querySelector(s);
+
+        const paintBands = () => {
+          const box = $$$('#bandRows');
+          if (!box) return;
+          const opts = (ripeField?.options || []).map(o => o.v);
+          box.innerHTML = bands.map((b, i) => `
+            <div class="band-row" data-b="${i}">
+              <span class="bl">à partir de <input type="number" step="0.1" min="${LIMITS.min}"
+                max="${LIMITS.max}" data-bm value="${b.min ?? 0}"> ${esc(pressureConfig(g).unit)}</span>
+              <select data-bs>${opts.map(o =>
+                `<option${o === b.stage ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>
+              <span class="bw">${'' /* impact conservabilité */}
+                <label>déf. <input type="number" min="0" step="1" data-bf value="${b.fail ?? 0}"></label>
+                <label>surv. <input type="number" min="0" step="1" data-bw value="${b.warn ?? 0}"></label></span>
+            </div>`).join('') || '<p class="muted" style="margin:0">Aucun palier.</p>';
+          box.querySelectorAll('.band-row').forEach(row => {
+            const i = +row.dataset.b;
+            row.querySelector('[data-bm]').oninput = (e) => { bands[i].min = clampP(e.target.value) ?? 0; };
+            row.querySelector('[data-bs]').onchange = (e) => { bands[i].stage = e.target.value; };
+            row.querySelector('[data-bf]').oninput = (e) => { bands[i].fail = Math.max(0, Number(e.target.value) || 0); };
+            row.querySelector('[data-bw]').oninput = (e) => { bands[i].warn = Math.max(0, Number(e.target.value) || 0); };
+          });
+        };
+        paintBands();
+
+        $$$('#cancel').onclick = () => close();
+        $$$('#reset').onclick = async () => {
+          if (!(await confirmSheet('Barème par défaut',
+                'Les seuils reviennent à ceux livrés avec l\'application.', { okLabel: 'Revenir', danger: false }))) return;
+          delete g.config.verdict;
+          await saveGroup(g); close(); after?.();
+          toast('Barème remis par défaut');
+        };
+        $$$('#ok').onclick = async () => {
+          const n = (id, d) => { const v = Number($$$('#' + id)?.value); return isFinite(v) && v >= 0 ? v : d; };
+          /* Un seuil « moyenne » plus haut que le seuil « mauvaise »
+             rendrait le palier du milieu inatteignable : on le refuse
+             plutôt que de livrer un barème qui ne peut rien produire. */
+          if (n('qMidF', 1) > n('qBad', 3))
+            return toast('Qualité : le seuil « moyenne » doit rester sous celui de « mauvaise »', 'err');
+          if (n('sMidF', 1) > n('sLow', 2))
+            return toast('Conservabilité : le seuil « moyenne » doit rester sous celui de « minimale »', 'err');
+          g.config.verdict = {
+            quality: { badFails: n('qBad', 3), midFails: n('qMidF', 1), midWarns: n('qMidW', 3) },
+            shelf:   { lowFails: n('sLow', 2), midFails: n('sMidF', 1), midWarns: n('sMidW', 2) },
+            press: Object.fromEntries(['critique', 'majeur', 'mineur'].map(l =>
+              [l, { fail: n('p_' + l + '_f', 0), warn: n('p_' + l + '_w', 0) }])),
+            ripeness: { bands: bands.map(b => ({ min: Number(b.min) || 0, stage: b.stage,
+                                                 fail: Number(b.fail) || 0, warn: Number(b.warn) || 0 })) },
+            eval: { acceptable: Math.min(1, Math.max(0, n('eAcc', 70) / 100)) }
+          };
+          await saveGroup(g); close(); after?.();
+          toast('Barème enregistré');
         };
       } });
 }
@@ -1191,10 +1346,40 @@ export async function renderUsers() {
 
 const roleLabel = (r) => ({ admin: 'Administrateur', inspecteur: 'Inspecteur', lecture: 'Lecture seule' }[r] || r);
 
+/* Écrit une modification de profil et VÉRIFIE qu'elle a porté.
+   Deux refus possibles, tous deux silencieux côté serveur :
+     — aucune ligne renvoyée : la règle de sécurité a écarté la ligne ;
+     — ligne renvoyée mais valeurs inchangées : le garde-fou de la base
+       annule toute modification du rôle ou de la validation faite par
+       quelqu'un qui n'est pas administrateur. Il REMET les anciennes
+       valeurs au lieu de lever une erreur, si bien que « pas d'erreur »
+       ne voulait pas dire « c'est fait ».
+   On compare donc ce qui revient à ce qu'on a demandé. */
+async function patchProfile(id, patch) {
+  const rows = await db('profiles').eq('id', id).update(patch);
+  if (!Array.isArray(rows) || !rows.length)
+    throw new Error("Modification refusée : votre compte doit être administrateur.");
+  const got = rows[0];
+  const raté = Object.keys(patch).filter(k => got[k] !== patch[k]);
+  if (raté.length)
+    throw new Error("La base a annulé la modification : seul un administrateur peut changer le rôle ou valider un accès.");
+  return got;
+}
+
 function editUser(u) {
   const me = u.id === state.profile?.id;
+  const pending = !u.approved;
+
+  /* Le bouton principal est celui qu'on cherche, et il fait ce qu'il
+     annonce. Sur un compte en attente, c'est « Valider l'accès » —
+     jusqu'ici c'était « Enregistrer », qui n'écrivait que le rôle :
+     sur un collègue déjà inspecteur, la requête ne changeait rien, la
+     fenêtre se refermait, et le compte restait bloqué sans un mot. */
   sheet(u.full_name || u.email, `
     <p class="muted" style="margin:0 0 14px">${esc(u.email || '')}</p>
+    ${pending && !me ? `<div class="ok-box" style="margin:0 0 14px">
+      Ce compte attend votre validation. Choisissez son rôle, puis touchez
+      <b>Valider l'accès</b> : il pourra se connecter aussitôt.</div>` : ''}
     <div class="field"><label for="ur">Rôle</label>
       <select id="ur"${me ? ' disabled' : ''}>
         <option value="inspecteur"${u.role === 'inspecteur' ? ' selected' : ''}>Inspecteur — crée et modifie ses rapports</option>
@@ -1202,31 +1387,46 @@ function editUser(u) {
         <option value="admin"${u.role === 'admin' ? ' selected' : ''}>Administrateur — gère produits, critères et accès</option>
       </select>${me ? '<div class="hint">Vous ne pouvez pas modifier votre propre rôle.</div>' : ''}</div>
     <div class="btn-row">
-      ${me ? '' : `<button class="btn ghost" style="flex:1" id="tog">${u.approved ? 'Suspendre' : 'Valider l\'accès'}</button>`}
-      <button class="btn" style="flex:1" id="ok">Enregistrer</button></div>`,
+      <button class="btn ghost" style="flex:1" id="cancel">Fermer</button>
+      ${me ? ''
+        : pending
+          ? `<button class="btn" style="flex:2" id="grant">Valider l'accès</button>`
+          : `<button class="btn ghost danger" style="flex:1" id="susp">Suspendre</button>
+             <button class="btn" style="flex:1" id="ok">Enregistrer</button>`}
+    </div>`,
     { onMount(el, close) {
-        const tog = el.querySelector('#tog');
-        if (tog) tog.onclick = async () => {
-          /* Valider l'accès enregistre aussi le rôle choisi juste
-             au-dessus : le bouton était le geste naturel pour « ce
-             collègue est inspecteur, ouvre-lui l'accès », et le rôle
-             partait à la poubelle. */
-          const patch = { approved: !u.approved };
+        el.querySelector('#cancel').onclick = () => close();
+        const busy = (b, txt) => { b.disabled = true; b.innerHTML = '<span class="spin"></span>'; return () => { b.disabled = false; b.textContent = txt; }; };
+
+        const grant = el.querySelector('#grant');
+        if (grant) grant.onclick = async () => {
+          const done = busy(grant, "Valider l'accès");
           const role = el.querySelector('#ur').value;
-          if (!u.approved && role !== u.role) patch.role = role;
-          try { await db('profiles').eq('id', u.id).update(patch); }
-          catch (e) { return toast(e.message, 'err'); }
+          try { await patchProfile(u.id, { approved: true, role }); }
+          catch (e) { done(); return toast(e.message, 'err'); }
           close();
-          toast(u.approved ? 'Accès suspendu'
-                           : `Accès validé${patch.role ? ' · ' + roleLabel(patch.role).toLowerCase() : ''}`);
+          toast(`Accès validé · ${roleLabel(role).toLowerCase()} — ${esc(u.full_name || u.email)} peut se connecter`, '', { ms: 5000 });
           renderUsers();
         };
-        el.querySelector('#ok').onclick = async () => {
-          if (!me) {
-            try { await db('profiles').eq('id', u.id).update({ role: el.querySelector('#ur').value }); }
-            catch (e) { return toast(e.message, 'err'); }
-          }
-          close(); renderUsers();
+
+        const susp = el.querySelector('#susp');
+        if (susp) susp.onclick = async () => {
+          if (!(await confirmSheet('Suspendre l\'accès',
+                `${u.full_name || u.email} ne pourra plus ouvrir l'application. Ses rapports restent en place.`,
+                { okLabel: 'Suspendre' }))) return;
+          try { await patchProfile(u.id, { approved: false }); }
+          catch (e) { return toast(e.message, 'err'); }
+          close(); toast('Accès suspendu'); renderUsers();
+        };
+
+        const ok = el.querySelector('#ok');
+        if (ok) ok.onclick = async () => {
+          const role = el.querySelector('#ur').value;
+          if (role === u.role) { close(); return toast('Aucun changement'); }
+          const done = busy(ok, 'Enregistrer');
+          try { await patchProfile(u.id, { role }); }
+          catch (e) { done(); return toast(e.message, 'err'); }
+          close(); toast(`Rôle enregistré · ${roleLabel(role).toLowerCase()}`); renderUsers();
         };
       } });
 }

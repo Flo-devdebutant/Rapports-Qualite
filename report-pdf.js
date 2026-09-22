@@ -18,7 +18,7 @@ import { countryName, countryNames } from './countries.js';
 import { lotStats, weightLotStats, weightStats, calibreMin,
          chartModel, labelledPoints, labelAnchor, fmtP, fmtG,
          refSpec, palletSeverity, pressureVerdict, sevMark, SEV_ORDER, SEV_STEPS, RANGE_TOL } from './pressure.js';
-import { reportType } from './report-types.js';
+import { reportType, badPallets } from './report-types.js';
 import { safeName } from './ui.js';
 
 /* ------------------------- traductions ------------------------- */
@@ -33,7 +33,7 @@ const T = {
         pkgCond:"Condition d'Emballage", gross:'Poids Brut (Kg)', tare:'Tare (Kg)', net:'Poids Net (Kg)',
         variety:'Variété', calibre:'Calibre', category:'Catégorie', reception:'Réception', shipment:'Expédition',
         reportRec:'Rapport de réception', reportShip:'Rapport d\'expédition client', conform:'Conforme',
-        nonConform:'Non Conforme', wk:'sem', bl:'N° de BL', origins:'Origines', sizes:'Détail du lot', boxes:'Nombre de colis', page:(i,n)=>`Page ${i} sur ${n}` , pressures:'Pressions', pressAvg:'Moyenne du lot', palletWord:'palette', palletsWord:'palettes', readings:'relevés', pressCurve:'Moyenne par palette', pressRef:'Référence', pallet:'Palette', average:'Moyenne', carrier:'Transporteur', voyage:'N° de Voyage' , reportProd:'Rapport contrôle production', packKind:'Conditionnement' , weightsTitle:'Poids par fruit', weightAvg:'Moyenne', weighings:'pesées', minRequired:'Min. requis', underOne:'fruit sous-calibré', underMany:'fruits sous-calibrés', underNone:'Aucun fruit sous le poids minimum de son calibre.' , pressState:'État', pressOk:'Conforme', pressTol:'Toléré', pressMinor:'Écart mineur', pressMajor:'Écart majeur', pressCrit:'Écart critique', pressRange:'Plage acceptée', pressZone:'Zone acceptée', pressScaleT:(a,b,c)=>`Écart toléré ${a} point ; jusqu'à ${b} mineur, jusqu'à ${c} majeur, au-delà critique. Barème appliqué à la moyenne de chaque palette.`, pressScaleR:(t)=>`Dans la plage : conforme. ${t} point de débordement toléré ; au-delà, écart critique et palette non conforme. Barème appliqué à la moyenne de chaque palette.`, pressOff:(n)=>`${n} ${n>1?'palettes hors référence':'palette hors référence'}`, refFrom:'selon', photosMissing:(n)=>`${n} photo${n>1?'s':''} du rapport n'${n>1?'ont':'a'} pas pu être jointe${n>1?'s':''} à ce document.` },
+        nonConform:'Non Conforme', wk:'sem', bl:'N° de BL', origins:'Origines', sizes:'Détail du lot', boxes:'Nombre de colis', page:(i,n)=>`Page ${i} sur ${n}` , pressures:'Pressions', pressAvg:'Moyenne du lot', palletWord:'palette', palletsWord:'palettes', readings:'relevés', pressCurve:'Moyenne par palette', pressRef:'Référence', pallet:'Palette', average:'Moyenne', carrier:'Transporteur', voyage:'N° de Voyage' , reportProd:'Rapport contrôle production', packKind:'Conditionnement' , weightsTitle:'Poids par fruit', weightAvg:'Moyenne', weighings:'pesées', minRequired:'Min. requis', underOne:'fruit sous-calibré', underMany:'fruits sous-calibrés', underNone:'Aucun fruit sous le poids minimum de son calibre.' , pressState:'État', pressOk:'Conforme', pressTol:'Toléré', pressMinor:'Écart mineur', pressMajor:'Écart majeur', pressCrit:'Écart critique', pressRange:'Plage acceptée', pressZone:'Zone acceptée', pressScaleT:(a,b,c)=>`Écart toléré ${a} point ; jusqu'à ${b} mineur, jusqu'à ${c} majeur, au-delà critique. Barème appliqué à la moyenne de chaque palette.`, pressScaleR:(t)=>`Dans la plage : conforme. ${t} point de débordement toléré ; au-delà, écart critique et palette non conforme. Barème appliqué à la moyenne de chaque palette.`, pressOff:(n)=>`${n} ${n>1?'palettes hors référence':'palette hors référence'}`, refFrom:'selon', ripeness:'Maturité du lot :', photosMissing:(n)=>`${n} photo${n>1?'s':''} du rapport n'${n>1?'ont':'a'} pas pu être jointe${n>1?'s':''} à ce document.` },
   en: { shared:'Report shared by', general:'General', summary:'Summary', packaging:'Packaging',
         characteristics:'Characteristics', remarks:'Remarks', photos:'Photos', date:'Date', dept:'Department',
         group:'Product group', origin:'Origin', loadId:'Load ID', order:'Order', supplier:'Supplier',
@@ -42,7 +42,7 @@ const T = {
         pkgCond:'Packaging condition', gross:'Gross weight (Kg)', tare:'Tare (Kg)', net:'Net weight (Kg)',
         variety:'Variety', calibre:'Size', category:'Class', reception:'Arrival', shipment:'Outbound',
         reportRec:'Arrival report', reportShip:'Customer shipment report', conform:'Compliant',
-        nonConform:'Non-compliant', wk:'wk', bl:'Delivery note', origins:'Origins', sizes:'Lot breakdown', boxes:'Number of boxes', page:(i,n)=>`Page ${i} of ${n}` , pressures:'Firmness', pressAvg:'Lot average', palletWord:'pallet', palletsWord:'pallets', readings:'readings', pressCurve:'Average per pallet', pressRef:'Reference', pallet:'Pallet', average:'Average', carrier:'Carrier', voyage:'Voyage No.' , reportProd:'Production control report', packKind:'Pack format' , weightsTitle:'Fruit weights', weightAvg:'Average', weighings:'weighings', minRequired:'Min. required', underOne:'undersized fruit', underMany:'undersized fruit', underNone:'No fruit below the minimum weight for its size.' , pressState:'Status', pressOk:'Compliant', pressTol:'Within tolerance', pressMinor:'Minor deviation', pressMajor:'Major deviation', pressCrit:'Critical deviation', pressRange:'Accepted range', pressZone:'Accepted zone', pressScaleT:(a,b,c)=>`${a} point of deviation accepted; up to ${b} minor, up to ${c} major, beyond that critical. Applied to each pallet average.`, pressScaleR:(t)=>`Within the range: compliant. ${t} point outside is tolerated; beyond that the deviation is critical and the pallet non-compliant. Applied to each pallet average.`, pressOff:(n)=>`${n} pallet${n>1?'s':''} outside the reference`, refFrom:'per', photosMissing:(n)=>`${n} photo${n>1?'s':''} from this report could not be attached to this document.` },
+        nonConform:'Non-compliant', wk:'wk', bl:'Delivery note', origins:'Origins', sizes:'Lot breakdown', boxes:'Number of boxes', page:(i,n)=>`Page ${i} of ${n}` , pressures:'Firmness', pressAvg:'Lot average', palletWord:'pallet', palletsWord:'pallets', readings:'readings', pressCurve:'Average per pallet', pressRef:'Reference', pallet:'Pallet', average:'Average', carrier:'Carrier', voyage:'Voyage No.' , reportProd:'Production control report', packKind:'Pack format' , weightsTitle:'Fruit weights', weightAvg:'Average', weighings:'weighings', minRequired:'Min. required', underOne:'undersized fruit', underMany:'undersized fruit', underNone:'No fruit below the minimum weight for its size.' , pressState:'Status', pressOk:'Compliant', pressTol:'Within tolerance', pressMinor:'Minor deviation', pressMajor:'Major deviation', pressCrit:'Critical deviation', pressRange:'Accepted range', pressZone:'Accepted zone', pressScaleT:(a,b,c)=>`${a} point of deviation accepted; up to ${b} minor, up to ${c} major, beyond that critical. Applied to each pallet average.`, pressScaleR:(t)=>`Within the range: compliant. ${t} point outside is tolerated; beyond that the deviation is critical and the pallet non-compliant. Applied to each pallet average.`, pressOff:(n)=>`${n} pallet${n>1?'s':''} outside the reference`, refFrom:'per', ripeness:'Lot ripeness:', photosMissing:(n)=>`${n} photo${n>1?'s':''} from this report could not be attached to this document.` },
   it: { shared:'Rapporto condiviso da', general:'Generale', summary:'Riepilogo', packaging:'Imballaggio',
         characteristics:'Caratteristiche', remarks:'Osservazioni', photos:'Foto', date:'Data', dept:'Reparto',
         group:'Gruppo di Prod.', origin:'Origine', loadId:'ID Carico', order:'Ordine', supplier:'Fornitore',
@@ -51,7 +51,7 @@ const T = {
         pkgCond:'Condizione Imballaggio', gross:'Peso Lordo (Kg)', tare:'Tara (Kg)', net:'Peso Netto (Kg)',
         variety:'Varietà', calibre:'Calibro', category:'Categoria', reception:'Arrivo', shipment:'Spedizione',
         reportRec:'Rapporto di arrivo', reportShip:'Rapporto di spedizione cliente', conform:'Conforme',
-        nonConform:'Non Conforme', wk:'sett', bl:'N. DDT', origins:'Origini', sizes:'Dettaglio lotto', boxes:'Numero di colli', page:(i,n)=>`Pagina ${i} di ${n}` , pressures:'Pressioni', pressAvg:'Media del lotto', palletWord:'pallet', palletsWord:'pallet', readings:'rilievi', pressCurve:'Media per pallet', pressRef:'Riferimento', pallet:'Pallet', average:'Media', carrier:'Trasportatore', voyage:'N. Viaggio' , reportProd:'Rapporto controllo produzione', packKind:'Confezionamento' , weightsTitle:'Peso per frutto', weightAvg:'Media', weighings:'pesate', minRequired:'Min. richiesto', underOne:'frutto sottocalibro', underMany:'frutti sottocalibro', underNone:'Nessun frutto sotto il peso minimo del suo calibro.' , pressState:'Stato', pressOk:'Conforme', pressTol:'Tollerato', pressMinor:'Scostamento lieve', pressMajor:'Scostamento grave', pressCrit:'Scostamento critico', pressRange:'Intervallo accettato', pressZone:'Zona accettata', pressScaleT:(a,b,c)=>`Scostamento tollerato ${a} punto; fino a ${b} lieve, fino a ${c} grave, oltre critico. Applicato alla media di ogni pallet.`, pressScaleR:(t)=>`Entro l'intervallo: conforme. ${t} punto di sconfinamento tollerato; oltre, scostamento critico e pallet non conforme. Applicato alla media di ogni pallet.`, pressOff:(n)=>`${n} pallet fuori riferimento`, refFrom:'secondo', photosMissing:(n)=>`${n} foto del rapporto non ${n>1?'sono state allegate':'è stata allegata'} a questo documento.` },
+        nonConform:'Non Conforme', wk:'sett', bl:'N. DDT', origins:'Origini', sizes:'Dettaglio lotto', boxes:'Numero di colli', page:(i,n)=>`Pagina ${i} di ${n}` , pressures:'Pressioni', pressAvg:'Media del lotto', palletWord:'pallet', palletsWord:'pallet', readings:'rilievi', pressCurve:'Media per pallet', pressRef:'Riferimento', pallet:'Pallet', average:'Media', carrier:'Trasportatore', voyage:'N. Viaggio' , reportProd:'Rapporto controllo produzione', packKind:'Confezionamento' , weightsTitle:'Peso per frutto', weightAvg:'Media', weighings:'pesate', minRequired:'Min. richiesto', underOne:'frutto sottocalibro', underMany:'frutti sottocalibro', underNone:'Nessun frutto sotto il peso minimo del suo calibro.' , pressState:'Stato', pressOk:'Conforme', pressTol:'Tollerato', pressMinor:'Scostamento lieve', pressMajor:'Scostamento grave', pressCrit:'Scostamento critico', pressRange:'Intervallo accettato', pressZone:'Zona accettata', pressScaleT:(a,b,c)=>`Scostamento tollerato ${a} punto; fino a ${b} lieve, fino a ${c} grave, oltre critico. Applicato alla media di ogni pallet.`, pressScaleR:(t)=>`Entro l'intervallo: conforme. ${t} punto di sconfinamento tollerato; oltre, scostamento critico e pallet non conforme. Applicato alla media di ogni pallet.`, pressOff:(n)=>`${n} pallet fuori riferimento`, refFrom:'secondo', ripeness:'Maturazione del lotto:', photosMissing:(n)=>`${n} foto del rapporto non ${n>1?'sono state allegate':'è stata allegata'} a questo documento.` },
   es: { shared:'Informe compartido por', general:'General', summary:'Resumen', packaging:'Embalaje',
         characteristics:'Características', remarks:'Observaciones', photos:'Fotos', date:'Fecha', dept:'Departamento',
         group:'Grupo de Prod.', origin:'Origen', loadId:'ID de Carga', order:'Pedido', supplier:'Proveedor',
@@ -60,7 +60,7 @@ const T = {
         pkgCond:'Condición de Embalaje', gross:'Peso Bruto (Kg)', tare:'Tara (Kg)', net:'Peso Neto (Kg)',
         variety:'Variedad', calibre:'Calibre', category:'Categoría', reception:'Recepción', shipment:'Expedición',
         reportRec:'Informe de recepción', reportShip:'Informe de expedición cliente', conform:'Conforme',
-        nonConform:'No Conforme', wk:'sem', bl:'Albarán', origins:'Orígenes', sizes:'Detalle del lote', boxes:'Número de bultos', page:(i,n)=>`Página ${i} de ${n}` , pressures:'Presiones', pressAvg:'Media del lote', palletWord:'palé', palletsWord:'palés', readings:'lecturas', pressCurve:'Media por palé', pressRef:'Referencia', pallet:'Palé', average:'Media', carrier:'Transportista', voyage:'N.º de Viaje' , reportProd:'Informe de control de producción', packKind:'Acondicionamiento' , weightsTitle:'Peso por fruto', weightAvg:'Media', weighings:'pesajes', minRequired:'Mín. exigido', underOne:'fruto subcalibrado', underMany:'frutos subcalibrados', underNone:'Ningún fruto por debajo del peso mínimo de su calibre.' , pressState:'Estado', pressOk:'Conforme', pressTol:'Tolerado', pressMinor:'Desviación leve', pressMajor:'Desviación grave', pressCrit:'Desviación crítica', pressRange:'Rango aceptado', pressZone:'Zona aceptada', pressScaleT:(a,b,c)=>`Desviación tolerada ${a} punto; hasta ${b} leve, hasta ${c} grave, más allá crítica. Aplicado a la media de cada palé.`, pressScaleR:(t)=>`Dentro del rango: conforme. ${t} punto de desbordamiento tolerado; más allá, desviación crítica y palé no conforme. Aplicado a la media de cada palé.`, pressOff:(n)=>`${n} palé${n>1?'s':''} fuera de referencia`, refFrom:'según', photosMissing:(n)=>`${n} foto${n>1?'s':''} del informe no ${n>1?'pudieron':'pudo'} adjuntarse a este documento.` },
+        nonConform:'No Conforme', wk:'sem', bl:'Albarán', origins:'Orígenes', sizes:'Detalle del lote', boxes:'Número de bultos', page:(i,n)=>`Página ${i} de ${n}` , pressures:'Presiones', pressAvg:'Media del lote', palletWord:'palé', palletsWord:'palés', readings:'lecturas', pressCurve:'Media por palé', pressRef:'Referencia', pallet:'Palé', average:'Media', carrier:'Transportista', voyage:'N.º de Viaje' , reportProd:'Informe de control de producción', packKind:'Acondicionamiento' , weightsTitle:'Peso por fruto', weightAvg:'Media', weighings:'pesajes', minRequired:'Mín. exigido', underOne:'fruto subcalibrado', underMany:'frutos subcalibrados', underNone:'Ningún fruto por debajo del peso mínimo de su calibre.' , pressState:'Estado', pressOk:'Conforme', pressTol:'Tolerado', pressMinor:'Desviación leve', pressMajor:'Desviación grave', pressCrit:'Desviación crítica', pressRange:'Rango aceptado', pressZone:'Zona aceptada', pressScaleT:(a,b,c)=>`Desviación tolerada ${a} punto; hasta ${b} leve, hasta ${c} grave, más allá crítica. Aplicado a la media de cada palé.`, pressScaleR:(t)=>`Dentro del rango: conforme. ${t} punto de desbordamiento tolerado; más allá, desviación crítica y palé no conforme. Aplicado a la media de cada palé.`, pressOff:(n)=>`${n} palé${n>1?'s':''} fuera de referencia`, refFrom:'según', ripeness:'Madurez del lote:', photosMissing:(n)=>`${n} foto${n>1?'s':''} del informe no ${n>1?'pudieron':'pudo'} adjuntarse a este documento.` },
   nl: { shared:'Rapport gedeeld door', general:'Algemeen', summary:'Samenvatting', packaging:'Verpakking',
         characteristics:'Kenmerken', remarks:'Opmerkingen', photos:"Foto's", date:'Datum', dept:'Afdeling',
         group:'Productgroep', origin:'Herkomst', loadId:'Laad-ID', order:'Order', supplier:'Leverancier',
@@ -69,7 +69,7 @@ const T = {
         pkgCond:'Verpakkingsconditie', gross:'Brutogewicht (Kg)', tare:'Tarra (Kg)', net:'Nettogewicht (Kg)',
         variety:'Ras', calibre:'Maat', category:'Klasse', reception:'Aankomst', shipment:'Uitgaand',
         reportRec:'Aankomstrapport', reportShip:'Klantrapport uitgaand', conform:'Conform',
-        nonConform:'Niet conform', wk:'wk', bl:'Vrachtbrief', origins:'Herkomsten', sizes:'Partijdetail', boxes:'Aantal colli', page:(i,n)=>`Pagina ${i} van ${n}` , pressures:'Drukmetingen', pressAvg:'Gemiddelde partij', palletWord:'pallet', palletsWord:'pallets', readings:'metingen', pressCurve:'Gemiddelde per pallet', pressRef:'Referentie', pallet:'Pallet', average:'Gemiddelde', carrier:'Vervoerder', voyage:'Reisnummer' , reportProd:'Productiecontrolerapport', packKind:'Verpakkingsvorm' , weightsTitle:'Gewicht per vrucht', weightAvg:'Gemiddelde', weighings:'wegingen', minRequired:'Min. vereist', underOne:'vrucht onder maat', underMany:'vruchten onder maat', underNone:'Geen vrucht onder het minimumgewicht van zijn maat.' , pressState:'Status', pressOk:'Conform', pressTol:'Getolereerd', pressMinor:'Geringe afwijking', pressMajor:'Grote afwijking', pressCrit:'Kritieke afwijking', pressRange:'Geaccepteerd bereik', pressZone:'Geaccepteerde zone', pressScaleT:(a,b,c)=>`${a} punt afwijking toegestaan; tot ${b} gering, tot ${c} groot, daarboven kritiek. Toegepast op het gemiddelde van elke pallet.`, pressScaleR:(t)=>`Binnen het bereik: conform. ${t} punt overschrijding wordt getolereerd; daarboven is de afwijking kritiek en de pallet niet conform. Toegepast op het gemiddelde van elke pallet.`, pressOff:(n)=>`${n} pallet${n>1?'s':''} buiten referentie`, refFrom:'volgens', photosMissing:(n)=>`${n} foto${n>1?`'s`:''} uit dit rapport ${n>1?'konden':'kon'} niet worden bijgevoegd.` }
+        nonConform:'Niet conform', wk:'wk', bl:'Vrachtbrief', origins:'Herkomsten', sizes:'Partijdetail', boxes:'Aantal colli', page:(i,n)=>`Pagina ${i} van ${n}` , pressures:'Drukmetingen', pressAvg:'Gemiddelde partij', palletWord:'pallet', palletsWord:'pallets', readings:'metingen', pressCurve:'Gemiddelde per pallet', pressRef:'Referentie', pallet:'Pallet', average:'Gemiddelde', carrier:'Vervoerder', voyage:'Reisnummer' , reportProd:'Productiecontrolerapport', packKind:'Verpakkingsvorm' , weightsTitle:'Gewicht per vrucht', weightAvg:'Gemiddelde', weighings:'wegingen', minRequired:'Min. vereist', underOne:'vrucht onder maat', underMany:'vruchten onder maat', underNone:'Geen vrucht onder het minimumgewicht van zijn maat.' , pressState:'Status', pressOk:'Conform', pressTol:'Getolereerd', pressMinor:'Geringe afwijking', pressMajor:'Grote afwijking', pressCrit:'Kritieke afwijking', pressRange:'Geaccepteerd bereik', pressZone:'Geaccepteerde zone', pressScaleT:(a,b,c)=>`${a} punt afwijking toegestaan; tot ${b} gering, tot ${c} groot, daarboven kritiek. Toegepast op het gemiddelde van elke pallet.`, pressScaleR:(t)=>`Binnen het bereik: conform. ${t} punt overschrijding wordt getolereerd; daarboven is de afwijking kritiek en de pallet niet conform. Toegepast op het gemiddelde van elke pallet.`, pressOff:(n)=>`${n} pallet${n>1?'s':''} buiten referentie`, refFrom:'volgens', ripeness:'Rijpheid partij:', photosMissing:(n)=>`${n} foto${n>1?`'s`:''} uit dit rapport ${n>1?'konden':'kon'} niet worden bijgevoegd.` }
 };
 
 /* ------------------------------------------------------------------
@@ -86,6 +86,14 @@ const TERMS = {
   'Avocat':             { en:'Avocado', it:'Avocado', es:'Aguacate', nl:'Avocado' },
   'Mangue':             { en:'Mango', it:'Mango', es:'Mango', nl:'Mango' },
   'Fruits & légumes':   { en:'Fruit & vegetables', it:'Frutta e verdura', es:'Frutas y verduras', nl:'Groente & fruit' },
+
+  /* --- stades de mûrissement (déduits de la moyenne des pressions) --- */
+  'Dur':              { en:'Hard', it:'Duro', es:'Duro', nl:'Hard' },
+  'En mûrissement':   { en:'Ripening', it:'In maturazione', es:'En maduración', nl:'Rijpend' },
+  'Bon pour rayon':   { en:'Shelf ready', it:'Pronto per lo scaffale', es:'Listo para lineal', nl:'Schapklaar' },
+  'Prêt à manger':    { en:'Ready to eat', it:'Pronto da mangiare', es:'Listo para comer', nl:'Klaar om te eten' },
+  'À consommer':      { en:'Eat now', it:'Da consumare', es:'Consumir ya', nl:'Nu eten' },
+  'Surmûr':           { en:'Overripe', it:'Troppo maturo', es:'Sobremaduro', nl:'Overrijp' },
 
   /* --- sections --- */
   'Palettisation':          { en:'Palletisation', it:'Pallettizzazione', es:'Paletización', nl:'Palletisering' },
@@ -312,7 +320,7 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
         s:  { v: tv(lang, s.shelf),   s: SHELF_STATUS[s.shelf] },
         v:  { v: tv(lang, s.verdict), s: VERDICT_STATUS[s.verdict] },
         nc: s.nc == null ? '' : String(s.nc),
-        pal: fmt(m.pal_count), bad: h.bad_pallet || '', lot: (isShip ? h.bl : h.lot) || '' } ]
+        pal: fmt(m.pal_count), bad: badCell(h), lot: (isShip ? h.bl : h.lot) || '' } ]
   );
 
   /* -- Calibres -- (seulement si l'envoi en mélange plusieurs, ou si
@@ -375,7 +383,7 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
 
   /* -- Pressions et poids -- */
   const pStats = lotStats(h.pressures);
-  if (pStats) drawPressures(doc, h.pressures, pStats, t, lang, refSpec(h.pressures, group), pressureVerdict(h.pressures, group));
+  if (pStats) drawPressures(doc, h.pressures, pStats, t, lang, refSpec(h.pressures, group), pressureVerdict(h.pressures, group), s.ripeness?.stage);
   const wStats = weightLotStats(h.pressures, group);
   if (wStats) drawWeights(doc, h.pressures, wStats, group, t, lang);
 
@@ -427,7 +435,7 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
    et la référence. Les valeurs ne sont posées que sur les points qui
    portent l'information : les extrêmes, les bornes, et tout point hors
    tolérance. */
-function drawPressures(doc, pressures, stats, t, lang, spec, pv) {
+function drawPressures(doc, pressures, stats, t, lang, spec, pv, ripe) {
   const unit = pressures.unit || 'kg';
   const SEVT = { ok: t.pressOk, mineur: t.pressMinor, majeur: t.pressMajor, critique: t.pressCrit };
   const col = (lvl) => lvl ? COLORS.SEV[lvl] : COLORS.SERIES;
@@ -460,6 +468,12 @@ function drawPressures(doc, pressures, stats, t, lang, spec, pv) {
         scope ? ` · ${scope}` : ''})` : ''),
       MARGIN, doc.y + 8, { size: 8.6, bold: true });
     doc.y += 12;
+    /* La maturité déduite de la moyenne : c'est elle qui dit si le lot
+       va tenir, indépendamment de l'écart à la référence. */
+    if (ripe) {
+      doc.text(`${t.ripeness} ${tr(lang, ripe)}`, MARGIN, doc.y + 8, { size: 8.4 });
+      doc.y += 11;
+    }
     const scale = spec.mode === 'range'
       ? t.pressScaleR(RANGE_TOL)
       : t.pressScaleT(SEV_STEPS.ok, SEV_STEPS.mineur, SEV_STEPS.majeur);
@@ -644,6 +658,15 @@ function drawWeights(doc, pressures, stats, group, t, lang) {
       row.avg = st ? fmtG(st.avg) : '';
       return row;
     }));
+}
+
+/* Palettes problématiques : le NOMBRE d'abord — c'est ce que le client
+   lit —, les numéros ensuite pour que le fournisseur sache lesquelles
+   aller voir. Le champ n'en acceptait qu'une seule. */
+function badCell(h) {
+  const list = badPallets(h);
+  if (!list.length) return '';
+  return list.length === 1 ? list[0] : `${list.length} — ${list.join(', ')}`;
 }
 
 const DP2 = { step: 0.01 };

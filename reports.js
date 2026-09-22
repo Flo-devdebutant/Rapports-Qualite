@@ -11,7 +11,7 @@ import { countryName, countryNames } from './countries.js';
 import { lotStats, weightLotStats, pressureConfig, fmtP, fmtG,
          pressureVerdict, refSpec, refText, SEV_LABEL } from './pressure.js';
 import { pressureChartSVG, pressureTable, weightTable } from './pressure-chart.js';
-import { reportType, TYPE_LIST } from './report-types.js';
+import { reportType, TYPE_LIST, badPallets } from './report-types.js';
 
 const filters = { q: '', type: '', group: '', partner: '', verdict: '', from: '', to: '' };
 
@@ -245,7 +245,8 @@ export async function renderReportView(id) {
       ${r.header?.bl ? kv('N° de BL', r.header.bl) : ''}
       ${r.header?.packaging_kind ? kv('Conditionnement', r.header.packaging_kind) : ''}
       ${r.header?.category ? kv('Catégorie', r.header.category) : ''}
-      ${r.header?.bad_pallet ? kv('Palette problématique', r.header.bad_pallet) : ''}
+      ${badPallets(r.header).length ? kv(badPallets(r.header).length > 1 ? 'Palettes problématiques' : 'Palette problématique',
+          `${badPallets(r.header).length} — n° ${badPallets(r.header).join(', ')}`) : ''}
       ${kv('Contrôlé par', r.inspector_name || '')}
     </div>
 
@@ -506,7 +507,7 @@ export function buildReportsXlsx(rows) {
 
   const head = ['N°','Date','Type','Groupe','Variété','Calibre','Origine(s)','Partenaire','Département',
                 'Commande','Id chargement','N° de lot','N° de BL','Catégorie','Conditionnement','Détail calibres','Qualité','Conservabilité','Évaluation',
-                '%NC','Étoiles','Palettes','Colis','Poids net','Température','Contrôleur','Remarques','Photos','Transporteur','N° de Voyage','Pression moy.','Pression min','Pression max','Palettes mesurées',
+                '%NC','Étoiles','Palettes','Colis','Poids net','Température','Contrôleur','Remarques','Photos','Transporteur','N° de Voyage','Palettes problématiques','N° palettes problématiques','Pression moy.','Pression min','Pression max','Palettes mesurées',
                 'Référence pression','Palettes hors référence','Écart le plus grave'];
   const main = rows.map(r => {
     const g = groupById(r.product_group_id), s = r.summary || {}, m = r.measures || {}, h = r.header || {};
@@ -516,6 +517,7 @@ export function buildReportsXlsx(rows) {
       s.nc ?? '', s.stars ?? '', num(m.pal_count), num(m.col_count), num(m.pkg_net), num(m.temp_pulp),
       r.inspector_name || '', (r.remarks || '').replace(/\n/g, ' '), r.photos?.length || 0,
       h.carrier || '', h.voyage || h.load_id || '',
+      badPallets(h).length || '', badPallets(h).join(' '),
       ...pressureCells(h, g)];
   });
 

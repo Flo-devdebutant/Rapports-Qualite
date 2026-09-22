@@ -110,9 +110,13 @@ const AVOCAT = {
           okMin: 21, okMax: 40, severity: 'critique',
           hint: 'FFV-42 : 21 % Hass · 20 % Fuerte/Pinkerton/Reed/Edranol · 19 % autres' },
         { key: 'ripe_stage', label: 'Stade de mûrissement', type: 'choice', severity: 'mineur',
-          options: [ {v:'Dur (> 10 kg)', s:'ok'}, {v:'En mûrissement (2,2–10 kg)', s:'ok'},
-                     {v:'Bon pour rayon (1,1–2,1 kg)', s:'ok'}, {v:'Prêt à manger (0,7–1,0 kg)', s:'warn'},
-                     {v:'À consommer (0,4–0,6 kg)', s:'warn'}, {v:'Surmûr (< 0,4 kg)', s:'fail'} ] }
+          /* Pas de plage chiffrée dans le libellé : les seuils vivent
+             dans les paliers de maturité du barème, réglables et
+             visibles. Deux sources de chiffres finissent toujours par
+             se contredire. */
+          options: [ {v:'Dur', s:'ok'}, {v:'En mûrissement', s:'ok'},
+                     {v:'Bon pour rayon', s:'ok'}, {v:'Prêt à manger', s:'warn'},
+                     {v:'À consommer', s:'warn'}, {v:'Surmûr', s:'fail'} ] }
       ]},
       { id: 'qualitatifs', label: 'Qualitatifs', fields: [
         { key: 'firm_min', label: 'Dureté min', unit: 'kg', type: 'num', step: 0.01 },

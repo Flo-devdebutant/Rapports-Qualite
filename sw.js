@@ -8,7 +8,7 @@
    Changer CACHE ci-dessous suffit à déployer une nouvelle version.
    ------------------------------------------------------------------ */
 
-const CACHE = 'mehadrin-qc-v13';
+const CACHE = 'mehadrin-qc-v15';
 
 const SHELL = [
   './', './index.html', './manifest.webmanifest', './logo.svg', './app.css',

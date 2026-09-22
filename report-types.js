@@ -137,3 +137,25 @@ export const typesLabel = (item) =>
   Array.isArray(item?.types) && item.types.length
     ? item.types.map(t => reportType(t).short).join(', ')
     : '';
+
+/* ------------------- palettes problématiques -------------------
+   Le rapport ne pouvait en désigner qu'UNE. Un conteneur peut en avoir
+   trois de travers, et l'inspecteur n'avait alors nulle part où le
+   dire. La saisie accepte donc une liste, et le NOMBRE — ce que le
+   client regarde — s'en déduit ; les numéros servent au fournisseur
+   pour aller voir les bonnes.
+   `bad_pallet` (singulier) reste écrit en parallèle : les rapports
+   déjà enregistrés et leurs PDF continuent de se lire. */
+export const splitPallets = (s) => [...new Set(String(s || '')
+  .split(/[,;/\s]+/).map(x => x.trim()).filter(Boolean))];
+
+export function badPallets(header) {
+  if (Array.isArray(header?.bad_pallets)) return header.bad_pallets.filter(Boolean);
+  return splitPallets(header?.bad_pallet || '');
+}
+
+export function badPalletsText(header) {
+  const n = badPallets(header).length;
+  return n ? `${n} palette${n > 1 ? 's' : ''} signalée${n > 1 ? 's' : ''}.`
+           : 'Aucune palette signalée. Laissez vide si le lot est sain.';
+}
