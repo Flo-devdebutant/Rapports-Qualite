@@ -7,7 +7,7 @@
 
 import { CONFIG } from './config.js';
 import { auth, db, currentUser } from './supa.js';
-import { local, sync, startAutoSync, onSync, pendingCount, openDB, forgetPhotos } from './store.js';
+import { local, sync, startAutoSync, onSync, pendingCount, openDB, forgetPhotos, forgetSharedJournal } from './store.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
 import { $, esc, icon, toast, closeSheets } from './ui.js';
 import { logoDataUrl } from './logo.js';
@@ -15,6 +15,7 @@ import { renderFeed, renderReportView } from './reports.js';
 import { renderForm, allDrafts } from './form.js';
 import { renderSettings, renderGroups, renderGroupEditor, renderPartners, renderUsers, renderAccount } from './settings.js';
 import { renderStats } from './stats.js';
+import { renderPhotoArchive } from './archive.js';
 import { TYPE_LIST } from './report-types.js';
 
 export const state = {
@@ -25,6 +26,17 @@ export const state = {
   syncState: 'idle',
   pending: 0
 };
+
+/* Molette de la souris sur un champ numérique qui a le focus : le
+   navigateur change la valeur (13 devient 12, 11…) sans que personne
+   ne s'en aperçoive — une pression ou un poids faussé en faisant
+   simplement défiler la page. On retire le focus avant que la molette
+   n'agisse : la saisie reste telle qu'elle a été tapée, validée comme
+   par un clic ailleurs, et la page défile normalement. */
+document.addEventListener('wheel', () => {
+  const el = document.activeElement;
+  if (el && el.tagName === 'INPUT' && el.type === 'number') el.blur();
+}, { passive: true, capture: true });
 
 /* ============================= AMORÇAGE ============================= */
 async function boot() {
@@ -49,6 +61,7 @@ async function boot() {
 
 async function bootInner() {
   await openDB();
+  try { await forgetSharedJournal(); } catch (e) { /* ménage facultatif */ }
   if (!currentUser()) return renderAuth();
 
   /* On tire d'abord ce que le serveur a, puis on lit le cache : sans
@@ -193,7 +206,8 @@ const routes = [
   [/^#\/settings\/groups\/([\w-]+)$/, (m) => renderGroupEditor(m[1], true)],
   [/^#\/settings\/partners$/,       () => renderPartners()],
   [/^#\/settings\/users$/,          () => renderUsers()],
-  [/^#\/settings\/account$/,        () => renderAccount()]
+  [/^#\/settings\/account$/,        () => renderAccount()],
+  [/^#\/settings\/photos$/,         () => renderPhotoArchive()]
 ];
 
 /* Chemin réellement parcouru. La flèche retour doit ramener là d'où

@@ -15,7 +15,7 @@
    ΔE 4,1 en deutéranopie).
    ------------------------------------------------------------------ */
 
-import { chartModel, labelledPoints, labelAnchor, fmtP, fmtG, calibreMin, weightStats,
+import { chartModel, labelledPoints, labelAnchor, fmtP, fmtG, palletWeighing,
          palletStats, palletSeverity, sevMark, SEV_COLOR, SEV_LABEL, refText } from './pressure.js';
 import { esc } from './ui.js';
 
@@ -113,14 +113,17 @@ export function pressureTable(pressures, cfg, spec, bad = new Set()) {
   const head = [];
   for (let f = 1; f <= cfg.fruits; f++)
     for (let s = 1; s <= cfg.sides; s++) head.push(cfg.sides > 1 ? `F${f}·${s}` : `F${f}`);
+  /* « # » : le rang de la palette sur le graphique (1, 2, 3…), qui ne
+     compte que les palettes mesurées. */
+  let rank = 0;
   return `<div class="pc-tablewrap"><table class="pc-table">
-    <thead><tr><th>Palette</th>${head.map(h => `<th>${h}</th>`).join('')}<th>Moy.</th>${
+    <thead><tr><th class="pc-rank">#</th><th class="pc-name">Palette</th>${head.map(h => `<th>${h}</th>`).join('')}<th>Moy.</th>${
       spec ? '<th>État</th>' : ''}</tr></thead>
     <tbody>${rows.map(r => {
       const v = (r.v || []);
       const st = palletStats(r);
       const sev = st ? palletSeverity(st.avg, spec) : null;
-      return `<tr${bad.has(String(r.n ?? '').trim()) ? ' class="bad"' : ''}><th>${esc(String(r.n ?? ''))}</th>${
+      return `<tr${bad.has(String(r.n ?? '').trim()) ? ' class="bad"' : ''}><td class="pc-rank">${st ? ++rank : ''}</td><th>${esc(String(r.n ?? ''))}</th>${
         head.map((_, i) => `<td>${v[i] === '' || v[i] == null ? '' : fmtP(Number(v[i])).replace('.0', '')}</td>`).join('')
       }<td class="pc-avg"${sev ? ` style="color:var(--sev-${sev.level})"` : ''}>${st ? fmtP(st.avg) : ''}</td>${
         spec ? `<td class="pc-state">${sev
@@ -130,23 +133,26 @@ export function pressureTable(pressures, cfg, spec, bad = new Set()) {
 }
 
 /* Tableau des poids : le fruit sous le minimum de son calibre ressort
-   en rouge — c'est la seule chose que ce tableau doit faire voir. */
+   en rouge — c'est la seule chose que ce tableau doit faire voir. Une
+   case vide est un fruit pesé et conforme : « Sous-poids » se lit donc
+   sur les fruits pesés de la palette (1/5), et la moyenne n'apparaît
+   que si tous les poids ont été notés. */
 export function weightTable(pressures, cfg, group, bad = new Set()) {
   const rows = (pressures?.pallets || []).filter(r => (r.w || []).some(v => v !== '' && v != null));
   if (!rows.length) return '';
   const head = Array.from({ length: cfg.fruits }, (_, f) => `F${f + 1}`);
   return `<div class="pc-tablewrap"><table class="pc-table">
-    <thead><tr><th>Palette</th><th>Calibre</th>${head.map(h => `<th>${h}</th>`).join('')}<th>Moy.</th><th>Min. requis</th></tr></thead>
+    <thead><tr><th class="pc-name">Palette</th><th>Calibre</th>${head.map(h => `<th>${h}</th>`).join('')}<th>Moy.</th><th>Min. requis</th><th>Sous-poids</th></tr></thead>
     <tbody>${rows.map(r => {
-      const min = calibreMin(group, r.cal);
-      const st = weightStats(r, min);
+      const s = palletWeighing(r, group, cfg.fruits);
       return `<tr${bad.has(String(r.n ?? '').trim()) ? ' class="bad"' : ''}><th>${esc(String(r.n ?? ''))}</th><td>${esc(r.cal || '—')}</td>${
         head.map((_, i) => {
           const v = r.w?.[i];
           if (v === '' || v == null) return '<td></td>';
-          const under = min != null && Number(v) < min;
+          const under = s.min != null && Number(v) < s.min;
           return `<td class="${under ? 'pc-under' : ''}">${fmtG(v)}${under ? ' ▼' : ''}</td>`;
         }).join('')
-      }<td class="pc-avg">${st ? fmtG(st.avg) : ''}</td><td>${min != null ? fmtG(min) : '—'}</td></tr>`;
+      }<td class="pc-avg">${s.avg != null ? fmtG(s.avg) : ''}</td><td>${s.min != null ? fmtG(s.min) : '—'}</td>${
+        s.min != null ? `<td class="${s.under ? 'pc-under' : ''}">${s.under}/${s.weighed}</td>` : '<td></td>'}</tr>`;
     }).join('')}</tbody></table></div>`;
 }

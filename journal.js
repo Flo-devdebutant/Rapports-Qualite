@@ -21,16 +21,17 @@
      Fournisseur  « WESTFALIA FRUIT FRANCE / EN ATTENTE > … » → avant le /
      Camion, Marque
 
-   Le journal importé est PARTAGÉ : importé une fois au bureau, il sert
-   à toute l'équipe — l'inspecteur n'a qu'à taper le n° de lot sur son
-   téléphone. Seules ces colonnes voyagent ; prix et montants de l'ERP
-   ne quittent jamais le fichier.
+   Le journal ne sert qu'à REMPLIR le rapport : il reste sur l'appareil
+   qui l'a importé et ne part jamais sur le serveur (le rapport, lui,
+   garde tout ce qu'il en a repris). Chaque import remplace le
+   précédent ; pour un nouveau rapport, on réimporte le même fichier ou
+   celui du jour. Prix et montants de l'ERP ne sont jamais lus.
    ------------------------------------------------------------------ */
 
 import { readTable, excelDate } from './xlsx-read.js';
 import { COUNTRIES } from './countries.js';
-import { local, queue, sync } from './store.js';
-import { db } from './supa.js';
+import { local } from './store.js';
+import { DEFAULT_GROUPS } from './catalog.js';
 
 export const normLabel = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '')
   .toLowerCase().replace(/\s+/g, ' ').trim();
@@ -102,14 +103,35 @@ export function designationOf(raw, { varieties = [], erpGroup = '' } = {}) {
   const s = String(raw ?? '').replace(/\s+/g, ' ').trim();
   const km = /(\d+(?:[.,]\d+)?)\s*KGS?\b/i.exec(s);
   const boxKg = km ? Number(km[1].replace(',', '.')) : null;
-  const up = normLabel(s);
-  const known = [...varieties].filter(Boolean).sort((a, b) => b.length - a.length)
-    .find(v => new RegExp(`(^|[^a-z0-9])${escRe(normLabel(v))}($|[^a-z0-9])`).test(up));
-  if (known) return { variety: known, boxKg };
+  const known = knownVariety(s, varieties);
+  if (known) return { variety: known, boxKg, known: true };
   const head = km ? s.slice(0, km.index) : s;
   const drop = new Set(normLabel(erpGroup).split(/[^a-z0-9]+/).filter(Boolean).map(singular));
   const words = head.split(' ').filter(w => w && !drop.has(singular(normLabel(w))));
-  return { variety: titleCase(words.join(' ')), boxKg };
+  return { variety: titleCase(words.join(' ')), boxKg, known: false };
+}
+
+/* Une variété de la liste de l'application, cherchée MOT À MOT dans un
+   texte de l'ERP : « AVOCAT ETTINGER 4KG » → Ettinger, quels que soient
+   les mots qui l'entourent. La plus longue d'abord : « Lamb Hass » avant
+   « Hass ». */
+export function knownVariety(text, varieties = []) {
+  const up = normLabel(text);
+  if (!up) return '';
+  return [...varieties].filter(Boolean).sort((a, b) => b.length - a.length)
+    .find(v => new RegExp(`(^|[^a-z0-9])${escRe(normLabel(v))}($|[^a-z0-9])`).test(up)) || '';
+}
+
+/* Liste de reconnaissance : les variétés du produit, complétées par
+   celles que l'application propose de base pour ce produit. */
+function varietyList(group) {
+  const base = DEFAULT_GROUPS.find(g => g.id === group?.id)?.config?.varieties || [];
+  const seen = new Set();
+  return [...(group?.config?.varieties || []), ...base].filter(v => {
+    const k = normLabel(v);
+    if (!k || seen.has(k)) return false;
+    seen.add(k); return true;
+  });
 }
 
 /* Groupe de l'ERP → groupe de produit de l'application.
@@ -229,14 +251,18 @@ export function lotModel(records, groups = [], fallbackGroupId = null) {
   const group = groupFor(erpGroup, groups)
     || groups.find(g => g.id === 'generique' && g.active !== false)
     || groups.find(g => g.id === fallbackGroupId) || null;
-  const varieties = group?.config?.varieties || [];
+  const varieties = varietyList(group);
 
   const pallets = rows.map(r => {
     const d = r.data;
     const des = designationOf(d.designation, { varieties, erpGroup: d.group });
+    /* Une variété connue d'abord (colonne Variété, puis désignation) ;
+       le texte brut de l'ERP seulement si aucune ne correspond. */
+    const variety = knownVariety(d.variety, varieties) || (des.known ? des.variety : '')
+      || (d.variety ? titleCase(d.variety) : des.variety);
     return {
       n: d.sscc, sub: d.sub, cal: d.cal, count: d.count ?? null,
-      variety: d.variety ? titleCase(d.variety) : des.variety, boxKg: des.boxKg,
+      variety, boxKg: des.boxKg,
       cat: categoryOf(d.category), brand: d.brand || '', ggn: d.ggn || '', producer: d.producer || '',
       boxes: d.boxes, origin: d.origin || '', supplierPallet: d.supplierPallet || ''
     };
@@ -272,38 +298,28 @@ export function lotModel(records, groups = [], fallbackGroupId = null) {
   };
 }
 
-/* -------------------------- stockage partagé -------------------------- */
-const CHUNK = 400;
-
+/* ----------------------- stockage sur l'appareil -----------------------
+   Rien ne part sur le serveur : le journal n'est qu'un outil de saisie.
+   Un nouvel import REMPLACE le précédent — pas d'accumulation, et un lot
+   corrigé dans l'ERP est relu tel qu'il est dans le fichier du jour. */
 export async function importJournal(file) {
   const buf = await file.arrayBuffer();
   const parsed = await parseJournal(buf);
   if (!parsed.records.length) throw new Error('Le journal ne contient aucune palette.');
+  await local.clear('arrivals');
   await local.putMany('arrivals', parsed.records);
-  for (let i = 0; i < parsed.records.length; i += CHUNK)
-    await queue('arrivals', { rows: parsed.records.slice(i, i + CHUNK) });
   const info = { ...parsed.stats, at: new Date().toISOString(), file: file.name || '' };
   await local.meta('journalInfo', info);
-  sync({ silent: true });
   return info;
 }
 
 export const journalInfo = () => local.meta('journalInfo');
 
-/* Palettes d'un lot : l'appareil d'abord (hors ligne, instantané),
-   puis la base partagée — un lot importé par un collègue n'est peut-être
-   pas encore descendu sur ce téléphone. */
-export async function recordsForLot(lot, { online = true } = {}) {
+/* Palettes d'un lot, dans le journal importé sur cet appareil. */
+export async function recordsForLot(lot) {
   const n = lotNumber(lot);
   if (!n) return [];
-  let rows = await local.byIndex('arrivals', 'lot', n);
-  if (!rows.length && online && navigator.onLine) {
-    try {
-      rows = await db('arrivals').select('id,lot,sscc,day,data').eq('lot', n);
-      if (rows.length) await local.putMany('arrivals', rows);
-    } catch (e) { rows = []; }
-  }
-  return rows;
+  return local.byIndex('arrivals', 'lot', n);
 }
 
 /* Lots récents, pour la liste de suggestions du champ « N° de lot ». */

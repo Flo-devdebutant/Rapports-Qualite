@@ -79,7 +79,19 @@ function ellipsize(str, size, bold, maxW) {
   return s + '…';
 }
 function wrapText(str, size, bold, maxW) {
-  const words = String(str ?? '').split(/\s+/).filter(Boolean);
+  const words = [];
+  for (const w of String(str ?? '').split(/\s+/).filter(Boolean)) {
+    /* Un mot plus large que la colonne — un n° de palette à 18
+       chiffres — se coupe à la largeur de la colonne : il ne déborde
+       jamais sur la voisine. */
+    if (textWidth(w, size, bold) <= maxW) { words.push(w); continue; }
+    let cur = '';
+    for (const ch of w) {
+      if (cur && textWidth(cur + ch, size, bold) > maxW) { words.push(cur); cur = ch; }
+      else cur += ch;
+    }
+    if (cur) words.push(cur);
+  }
   const lines = []; let line = '';
   for (const w of words) {
     const probe = line ? line + ' ' + w : w;
@@ -265,14 +277,42 @@ export class PDF {
 
   /* Options : `size` (corps des cellules), `headSize` (en-têtes).
      Une colonne marquée `rot` a son en-tête écrit verticalement.
+     Une colonne marquée `fit` prend la largeur de son contenu le plus
+     long (un n° de palette à 18 chiffres tient sur une ligne) ; les
+     autres se partagent le reste, au prorata de leur `w`.
      Une ligne portant `_bg` est surlignée — les palettes
      problématiques, par exemple. */
   table(cols, rows, { size = 8.4, headSize = 8.2 } = {}) {
-    const total = cols.reduce((s, c) => s + c.w, 0);
-    const scale = (A4.w - 2 * M) / total;
-    const W = cols.map(c => c.w * scale);
+    const cellText = (v) => String(((v && typeof v === 'object') ? v.v : v) ?? '');
+    const cellBold = (v) => !!(v && typeof v === 'object' && v.bold);
+    const avail = A4.w - 2 * M;
+    const fitW = cols.map(c => {
+      if (!c.fit) return null;
+      const head = Math.max(0, ...String(c.h ?? '').split(/\s+/).map(w => textWidth(w, headSize, true)));
+      const body = Math.max(0, ...rows.map(r => textWidth(cellText(r[c.k]), size, cellBold(r[c.k]))));
+      return Math.min(Math.max(c.w, head, body) + 8, avail * 0.45);
+    });
+    /* Aucun en-tête ne se coupe au milieu d'un mot : une colonne a au
+       moins la largeur de son mot d'en-tête le plus long. Celles qui
+       passeraient sous ce seuil y sont fixées, les autres se partagent
+       le reste. */
+    const minW = cols.map(c => c.rot ? 0
+      : Math.max(0, ...String(c.h ?? '').split(/\s+/).map(w => textWidth(w, headSize, true))) + 7);
+    const W = cols.map((c, i) => fitW[i]);
+    for (let pass = 0; pass < cols.length; pass++) {
+      const fixed = W.reduce((s, w) => s + (w || 0), 0);
+      const flex = cols.reduce((s, c, i) => s + (W[i] == null ? c.w : 0), 0);
+      const scale = flex ? Math.max(0, avail - fixed) / flex : 1;
+      const short = cols.findIndex((c, i) => W[i] == null && c.w * scale < minW[i]);
+      if (short < 0) { cols.forEach((c, i) => { if (W[i] == null) W[i] = c.w * scale; }); break; }
+      W[short] = minW[short];
+    }
+    cols.forEach((c, i) => { if (W[i] == null) W[i] = minW[i]; });
     const lh = size + 1.6, hlh = headSize + 1.8;
 
+    /* Les en-têtes sont posés contre le filet bleu, quelle que soit leur
+       hauteur : à côté d'en-têtes verticaux, « Palette » ou « Ext. »
+       ne flottent plus en haut du bloc, loin de leur colonne. */
     const head = () => {
       const hLines = cols.map((c, i) => c.rot ? [] : wrapText(c.h, headSize, true, W[i] - 6));
       const rotH = Math.max(0, ...cols.map(c => c.rot ? textWidth(c.h, headSize, true) + 4 : 0));
@@ -281,7 +321,10 @@ export class PDF {
       let x = M;
       cols.forEach((c, i) => {
         if (c.rot) this.vtext(c.h, x + 1 + headSize * 0.75, this.y + hh + 1, { size: headSize, bold: true });
-        else hLines[i].forEach((ln, k) => this.text(ln, x + 1, this.y + headSize + k * hlh, { size: headSize, bold: true }));
+        else {
+          const top = this.y + hh - hLines[i].length * hlh;
+          hLines[i].forEach((ln, k) => this.text(ln, x + 1, top + headSize + k * hlh, { size: headSize, bold: true }));
+        }
         x += W[i];
       });
       this.y += hh + 4;
@@ -293,8 +336,7 @@ export class PDF {
     for (const r of rows) {
       const cells = cols.map((c, i) => {
         const v = r[c.k];
-        const val = (v && typeof v === 'object') ? v.v : v;
-        return wrapText(val ?? '', size, false, W[i] - ((v && v.s) ? 18 : 6));
+        return wrapText(cellText(v), size, cellBold(v), W[i] - ((v && v.s) ? 18 : 6));
       });
       const rh = Math.max(...cells.map(l => l.length)) * lh + 3;
       if (this.y + rh > A4.h - M - 18) { this.newPage(); head(); }

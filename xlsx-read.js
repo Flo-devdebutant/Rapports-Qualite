@@ -229,11 +229,20 @@ function sheetRows(xml, sst) {
           const is = /<is>([\s\S]*?)<\/is>/.exec(body);
           if (is) v = sharedStrings(`<si>${is[1]}</si>`)[0];
         } else {
-          const vm = /<v>([\s\S]*?)<\/v>/.exec(body);
+          const vm = /<v\b[^>]*>([\s\S]*?)<\/v>/.exec(body);
           if (vm) v = unxml(vm[1]);
         }
-        if (v == null) continue;
-        if (t === 's') cells[ci] = { t: 's', v: sst[Number(v)] ?? '' };
+        /* Une cellule vide peut arriver avec une valeur vide : l'ERP écrit
+           `<c t="s"><v></v></c>`. Number('') vaut 0, soit la PREMIÈRE
+           chaîne du classeur — l'étiquette « T » de la colonne A, qui
+           remplissait variété, marque et camion. Vide = vide. */
+        if (v == null || !/\S/.test(v)) continue;
+        if (t === 's') {
+          if (!/^\s*\d+\s*$/.test(v)) continue;
+          const s = sst[Number(v)];
+          if (s == null || s === '') continue;
+          cells[ci] = { t: 's', v: s };
+        }
         else if (t === 'str' || t === 'inlineStr') cells[ci] = { t: 's', v };
         else cells[ci] = { t: t === 'b' ? 'b' : t === 'e' ? 'e' : t === 'd' ? 'd' : 'n', v };
       }

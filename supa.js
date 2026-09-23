@@ -252,5 +252,25 @@ export const storage = {
     await fetch(`${base()}/storage/v1/object/photos/${path}`, {
       method: 'DELETE', headers: await authHeaders()
     }).catch(() => {});
+  },
+
+  /* Suppression groupée, pour l'archivage. Contrairement à remove(),
+     l'échec remonte, et la réponse dit quels fichiers ont réellement
+     disparu : les droits (RLS) peuvent en épargner certains sans
+     erreur, et l'application ne doit pas les croire archivés. */
+  async removeMany(paths) {
+    if (!paths.length) return [];
+    const r = await fetch(`${base()}/storage/v1/object/photos`, {
+      method: 'DELETE',
+      headers: await authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ prefixes: paths })
+    });
+    if (!r.ok) {
+      const e = new Error(tidy(await r.text()));
+      e.status = r.status;
+      throw e;
+    }
+    const d = await r.json().catch(() => []);
+    return (Array.isArray(d) ? d : []).map(o => o.name).filter(Boolean);
   }
 };

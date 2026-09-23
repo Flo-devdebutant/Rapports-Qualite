@@ -12,6 +12,8 @@
    ce que voit l'inspecteur ne doit pas trouver deux dessins différents.
    ------------------------------------------------------------------ */
 
+import { DEFAULT_GROUPS } from './catalog.js';
+
 export const DEFAULT_PRESSURE = { fruits: 5, sides: 2, ref: 13, unit: 'kg' };
 
 /* Le pénétromètre ne lit rien en dehors de 0 à 13 : une pression
@@ -268,42 +270,115 @@ const num = (v) => {
 };
 
 /* ---------------------------- poids ----------------------------
-   Au contrôle production, chaque fruit prélevé est aussi pesé. Le
-   poids minimum dépend du calibre annoncé : un fruit en dessous est
-   sous-calibré, et c'est exactement ce que le contrôle cherche. Le
-   maximum n'est pas vérifié — un fruit plus gros que prévu profite au
-   client, ce n'est pas un défaut. */
-export function calibreMin(group, calibre) {
-  const table = group?.config?.calibreWeights || {};
-  if (!calibre) return null;
-  const v = table[calibre] ?? table[String(calibre).trim()];
-  return v == null || v === '' ? null : Number(v);
+   Chaque fruit de la pression est aussi pesé. Le poids attendu dépend
+   du calibre :
+   - avocat : un minimum par calibre (`calibreWeights`) — le calibre
+     compte les fruits d'un colis de 4 kg, quel que soit le colis réel ;
+   - mangue : le calibre dépend AUSSI du colis. Un calibre 10 pèse
+     250–315 g en colis de 3 kg, 360–425 g en 4 kg, 600–725 g en 6 kg.
+     `sizeTable` reprend la feuille affichée au quai : une ligne par
+     tranche de poids, et le calibre de chaque colis dans cette tranche.
+   Seul le minimum juge : un fruit plus lourd que prévu profite au
+   client. Le maximum est rappelé à l'inspecteur. */
+
+/* La table du groupe ; à défaut (clé absente, jamais enregistrée),
+   celle que l'application propose de base pour ce produit. Une table
+   vidée dans les réglages reste vide. */
+export function sizeTableOf(group) {
+  const own = group?.config?.sizeTable;
+  if (own !== undefined) return own && Array.isArray(own.rows) && own.rows.length ? own : null;
+  const d = DEFAULT_GROUPS.find(g => g.id === group?.id)?.config?.sizeTable;
+  return d && Array.isArray(d.rows) && d.rows.length ? d : null;
 }
 
-export function weightStats(pallet, min) {
-  const w = (pallet?.w || []).filter(x => x !== '' && x != null).map(Number).filter(isFinite);
-  if (!w.length) return null;
-  const sum = w.reduce((a, b) => a + b, 0);
+/* « 4 », « 4.0 », « 4,0 » → « 4 » : la même clé partout. */
+export const boxKey = (kg) => {
+  const n = Number(String(kg ?? '').replace(',', '.'));
+  return isFinite(n) && n > 0 ? String(Math.round(n * 100) / 100) : '';
+};
+
+/* Poids attendu d'un fruit : { min, max, box } ou null si inconnu.
+   Colis inconnu et table par colis : on ne tranche que si un seul
+   colis de la table porte ce calibre (le 14 n'existe qu'en 4 kg) ; un
+   calibre 10, présent dans les trois colis, reste sans minimum. */
+export function calibreRange(group, calibre, boxKg) {
+  const cal = String(calibre ?? '').trim();
+  if (!cal) return null;
+  const t = sizeTableOf(group);
+  if (t) {
+    const boxes = (t.boxes || []).map(boxKey).filter(Boolean);
+    const inCol = (b) => t.rows.find(r => String(r?.cal?.[b] ?? '').trim() === cal);
+    const key = boxKey(boxKg);
+    let row = null, box = '';
+    if (key && boxes.includes(key)) { row = inCol(key); box = key; }
+    else if (!key) {
+      const hits = boxes.map(b => [b, inCol(b)]).filter(([, r]) => r);
+      if (hits.length === 1) [box, row] = hits[0];
+    }
+    if (row) {
+      const min = num(row.min), max = num(row.max);
+      if (min != null || max != null) return { min, max, box };
+    }
+  }
+  const table = group?.config?.calibreWeights || {};
+  const v = num(table[cal] ?? table[calibre]);
+  return v == null ? null : { min: v, max: null, box: '' };
+}
+
+export const calibreMin = (group, calibre, boxKg) => calibreRange(group, calibre, boxKg)?.min ?? null;
+
+/* Le calibre dépend-il du colis, sans que ce colis soit connu ? */
+export const needsBox = (group, pal) =>
+  !!sizeTableOf(group) && !!String(pal?.cal ?? '').trim() && !boxKey(pal?.boxKg) && !calibreRange(group, pal.cal, '');
+
+/* Pesée d'une palette. On pèse `fruits` fruits par palette — ceux de
+   la pression : 5 pour l'avocat, 3 pour la mangue — mais seuls ceux
+   SOUS le minimum doivent être notés : une case vide est un fruit
+   conforme. Le sous-calibre d'une palette se rapporte donc aux fruits
+   PESÉS, pas aux cases remplies : un seul fruit noté sous le minimum,
+   c'est 1 sur 5 = 20 %, pas 1 sur 1 = 100 %.
+   Une palette compte comme pesée dès qu'elle a été mesurée (pression
+   ou poids). La moyenne n'a de sens que si tous ses fruits sont notés :
+   la moyenne des seuls fruits trop légers ne dit rien du lot. */
+export function palletWeighing(pal, group, fruits = DEFAULT_PRESSURE.fruits) {
+  const range = calibreRange(group, pal?.cal, pal?.boxKg);
+  const min = range?.min ?? null;
+  const entered = (pal?.w || []).filter(v => v !== '' && v != null).map(Number).filter(isFinite);
+  const sampled = entered.length > 0 || (pal?.v || []).some(v => v !== '' && v != null);
+  const weighed = sampled ? Math.max(entered.length, Number(fruits) || 0) : 0;
+  const lows = min == null ? [] : entered.filter(v => v < min);
+  const complete = entered.length > 0 && entered.length >= weighed;
   return {
-    n: w.length, avg: sum / w.length, min: Math.min(...w), max: Math.max(...w),
-    under: min == null ? 0 : w.filter(v => v < min).length
+    range, min, max: range?.max ?? null,
+    entered, n: entered.length, weighed, sampled, complete,
+    under: lows.length, lows,
+    pct: min != null && weighed ? (lows.length / weighed) * 100 : null,
+    avg: complete ? entered.reduce((a, b) => a + b, 0) / entered.length : null
   };
 }
 
+/* Le lot : toutes les palettes mesurées dont le calibre a un minimum,
+   qu'on y ait noté un poids ou non. `null` si aucun poids n'est noté —
+   le rapport n'affiche alors pas de bloc « Poids ». */
 export function weightLotStats(pressures, group) {
-  const rows = (pressures?.pallets || [])
-    .map(p => ({ p, min: calibreMin(group, p.cal), s: null }))
-    .map(x => ({ ...x, s: weightStats(x.p, x.min) }))
-    .filter(x => x.s);
-  if (!rows.length) return null;
-  const all = rows.flatMap(x => (x.p.w || []).filter(v => v !== '' && v != null).map(Number).filter(isFinite));
+  const fruits = pressures?.fruits || DEFAULT_PRESSURE.fruits;
+  const rows = (pressures?.pallets || []).map(p => ({ p, s: palletWeighing(p, group, fruits) }));
+  const noted = rows.filter(x => x.s.n);
+  if (!noted.length) return null;
+  const judged = rows.filter(x => x.s.min != null && x.s.weighed);
+  const values = noted.flatMap(x => x.s.entered);
+  const complete = noted.every(x => x.s.complete);
   return {
-    pallets: rows.map(x => ({ name: String(x.p.n ?? ''), cal: x.p.cal || '', min: x.min, ...x.s })),
-    count: rows.length,
-    measures: all.length,
-    avg: all.reduce((a, b) => a + b, 0) / all.length,
-    min: Math.min(...all), max: Math.max(...all),
-    under: rows.reduce((t, x) => t + x.s.under, 0)
+    pallets: noted.map(x => ({ name: String(x.p.n ?? ''), cal: x.p.cal || '', ...x.s })),
+    count: noted.length, fruits,
+    measures: values.length,
+    judged: judged.length,
+    weighed: judged.reduce((t, x) => t + x.s.weighed, 0),
+    under: judged.reduce((t, x) => t + x.s.under, 0),
+    complete,
+    avg: complete ? values.reduce((a, b) => a + b, 0) / values.length : null,
+    min: complete ? Math.min(...values) : null,
+    max: complete ? Math.max(...values) : null
   };
 }
 
@@ -381,7 +456,10 @@ export function chartModel(pressures, { width, height, spec }) {
       /* L'étiquette se pose au-dessus du point ; elle ne bascule
          dessous que si le point touche le haut du cadre. */
       labelY: py - pad.t < 2 ? py + 16 : py - 10,
-      label: i % Math.ceil(n / 12) === 0 || i === n - 1 ? p.name : ''
+      /* Abscisse : le rang de la palette (1, 2, 3…), repris dans la
+         colonne « # » du tableau. Un n° réel à 18 chiffres par point
+         ne tenait pas : les étiquettes se chevauchaient. */
+      label: i % Math.ceil(n / 30) === 0 || i === n - 1 ? String(i + 1) : ''
     };
   });
 

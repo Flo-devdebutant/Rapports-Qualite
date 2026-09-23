@@ -127,7 +127,29 @@ export async function sync({ silent = false } = {}) {
    cause de réseau, lui, est simplement réessayé — indéfiniment, parce
    qu'un quai sans couverture n'est pas une raison de perdre un
    rapport. */
+/* Rapports en attente de leur PDF. Juste après l'enregistrement,
+   l'application propose le PDF avec les photos en PLEINE définition ;
+   ce n'est qu'ensuite que les photos sont allégées et envoyées. Tant
+   que la proposition est ouverte, ce rapport-là ne part pas — le reste
+   de la file, si. En mémoire seulement : si l'application se ferme
+   entre-temps, l'envoi reprend normalement au démarrage suivant. */
+const held = new Set();
+export const holdReport = (id) => { if (id) held.add(id); };
+export const releaseReport = (id) => { held.delete(id); };
+
+/* La copie qui part sur Supabase : 800 px de côté au plus, soit
+   environ un tiers de la photo prise (1400 px). L'offre gratuite
+   plafonne les fichiers à 1 Go ; la pleine définition a été proposée
+   en PDF à l'enregistrement. */
+export const LIGHT_PHOTO = { maxSide: 800, quality: 0.6 };
+
 async function push() {
+  /* Envois du journal des arrivages laissés par la 2.4.0 : le journal
+     ne part plus sur le serveur. On les retire, bloqués compris, pour
+     qu'ils ne restent pas affichés comme « refusés ». */
+  for (const i of await local.all('outbox'))
+    if (i.kind === 'arrivals') await local.del('outbox', i.id);
+
   const items = (await local.all('outbox'))
     .filter(i => !i.blocked)
     .sort((a, b) => a.at - b.at);
@@ -136,6 +158,7 @@ async function push() {
   for (const item of items) {
     try {
       if (item.kind === 'report') {
+        if (held.has(item.payload.id)) continue;      // PDF proposé en ce moment
         const report = await local.get('reports', item.payload.id);
         if (!report) { await local.del('outbox', item.id); continue; }
         await uploadPhotos(report);
@@ -150,10 +173,10 @@ async function push() {
         await db('partners').eq('id', item.payload.id).remove();
       } else if (item.kind === 'deleteReport') {
         await db('reports').eq('id', item.payload.id).update({ deleted: true });
-      } else if (item.kind === 'arrivals') {
-        /* Seules les colonnes du journal partent : le numéro de
-           séquence et les dates sont posés par la base. */
-        await db('arrivals').upsert(item.payload.rows.map(({ id, lot, sscc, day, data }) => ({ id, lot, sscc, day, data })));
+        /* Les photos du rapport supprimé libèrent leur place. Au mieux :
+           un refus (droits, fichier déjà absent) ne bloque pas la file. */
+        const paths = item.payload.photos || [];
+        if (paths.length) await storage.removeMany(paths).catch(() => {});
       }
       await local.del('outbox', item.id);
     } catch (e) {
@@ -186,7 +209,9 @@ async function uploadPhotos(report) {
   const photos = report.photos || [];
   const gone = [];
   for (const p of photos) {
-    if (p.uploaded || !p.localId) continue;
+    /* Archivée : retirée de Supabase exprès, elle vit dans le PDF
+       d'archive — ce n'est pas une photo perdue à effacer. */
+    if (p.uploaded || p.archived || !p.localId) continue;
     const rec = await local.get('photos', p.localId);
     if (!rec) {
       /* Le fichier a disparu du cache (nettoyage du navigateur, base
@@ -197,8 +222,19 @@ async function uploadPhotos(report) {
       gone.push(p);
       continue;
     }
-    await storage.upload(p.path, rec.blob, 'image/jpeg');
+    /* Seule une copie allégée part. Si l'image ne se laisse pas
+       réduire (format exotique), l'original part tel quel : on ne perd
+       jamais une photo pour gagner de la place. */
+    let body = rec.blob, light = false;
+    try {
+      const { compressImage } = await import('./ui.js');
+      const small = await compressImage(rec.blob, LIGHT_PHOTO.maxSide, LIGHT_PHOTO.quality);
+      if (small && small.size && small.size < rec.blob.size) { body = small; light = true; }
+    } catch (e) { /* on envoie l'original */ }
+    await storage.upload(p.path, body, 'image/jpeg');
     p.uploaded = true;
+    if (light) p.light = true;
+    p.size = body.size;
     /* Une fois chez Supabase, le binaire local n'a plus de raison
        d'occuper la place : il se retélécharge à la demande. */
     await local.del('photos', p.localId).catch(() => {});
@@ -268,35 +304,17 @@ async function pull() {
     for (const g of groups) await local.put('groups', g);
   }
 
-  /* Le journal des arrivages ne doit jamais bloquer la synchronisation
-     des rapports : une erreur ici est notée et on continue. */
-  try { await pullArrivals(); } catch (e) { console.warn('[arrivages]', e.message); }
 }
 
-/* Palettes reçues ces 30 derniers jours, par petits paquets : chaque
-   téléphone retrouve un lot importé au bureau, même hors réseau au
-   moment de taper son numéro. Plus ancien, le lot se cherche en ligne
-   à la demande. */
-async function pullArrivals() {
-  const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-  let cursor = Number(await local.meta('arrivalsSeq')) || 0;
-  for (let page = 0; page < 6; page++) {
-    const rows = await db('arrivals').select('id,lot,sscc,day,data,seq')
-      .gt('seq', cursor).gte('day', since).order('seq', true).limit(1000);
-    if (!rows?.length) break;
-    await local.putMany('arrivals', rows);
-    cursor = rows.reduce((m, r) => Math.max(m, Number(r.seq) || 0), cursor);
-    await local.meta('arrivalsSeq', cursor);
-    if (rows.length < 1000) break;
-  }
-  /* Ménage une fois par jour : trois mois de palettes suffisent. */
-  const today = new Date().toISOString().slice(0, 10);
-  if ((await local.meta('arrivalsPurge')) !== today) {
-    const limit = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
-    const old = (await local.all('arrivals')).filter(r => r.day && r.day < limit).map(r => r.id);
-    if (old.length) await local.delMany('arrivals', old);
-    await local.meta('arrivalsPurge', today);
-  }
+/* Une seule fois, au premier lancement de la 2.4.1 : la 2.4.0
+   descendait sur chaque appareil le journal importé par toute l'équipe.
+   Le journal ne vit plus que sur l'appareil qui l'importe ; ces copies
+   et leurs repères sont effacés (un nouvel import suffit). */
+export async function forgetSharedJournal() {
+  if (await local.meta('journalLocalOnly')) return;
+  await local.clear('arrivals');
+  for (const k of ['journalInfo', 'arrivalsSeq', 'arrivalsPurge']) await local.meta(k, null);
+  await local.meta('journalLocalOnly', 1);
 }
 
 /* Relance la synchro dès le retour du réseau et toutes les 2 min. */

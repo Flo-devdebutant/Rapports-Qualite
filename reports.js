@@ -1,7 +1,7 @@
 /* Flux des rapports (liste filtrable) et fiche d'un rapport. */
 
 import { state, shell, groupById, go, back, syncBadge } from './app.js';
-import { local, queue, sync } from './store.js';
+import { local, queue, sync, releaseReport } from './store.js';
 import { flatFields, statusIn, savedContext, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { $, $$, esc, icon, toast, sheet, confirmSheet, stars, fmtDate, debounce, shareFile, download } from './ui.js';
 import { buildReportPDF, reportFilename, LANGS } from './report-pdf.js';
@@ -128,10 +128,10 @@ async function paintList(rows) {
         <span class="pill ${VERDICT_STATUS[s.verdict] || ''}">${esc(s.verdict || '—')}</span>
         ${s.nc != null ? `<span class="pill">${s.nc} %NC</span>` : ''}
       </div>
-      ${r.photos?.length ? `<div class="thumbs" data-thumbs="${esc(r.id)}"></div>` : ''}`;
+      ${livePhotos(r).length ? `<div class="thumbs" data-thumbs="${esc(r.id)}"></div>` : ''}`;
     el.onclick = () => go('#/report/' + r.id);
     list.appendChild(el);
-    if (r.photos?.length) paintThumbs(r);
+    if (livePhotos(r).length) paintThumbs(r);
   }
 }
 
@@ -149,7 +149,7 @@ const showBlob = (img, url) => {
 async function paintThumbs(r) {
   const box = document.querySelector(`[data-thumbs="${CSS.escape(r.id)}"]`);
   if (!box) return;
-  for (const p of r.photos.slice(0, 4)) {
+  for (const p of livePhotos(r).slice(0, 4)) {
     const blob = p.localId ? (await local.get('photos', p.localId))?.blob : null;
     const img = new Image(); img.alt = '';
     if (blob) showBlob(img, URL.createObjectURL(blob));
@@ -276,7 +276,8 @@ export async function renderReportView(id) {
 
     ${r.photos?.length ? `<div class="card pad" style="margin-top:12px">
       <div class="muted" style="margin-bottom:6px">Photos (${r.photos.length})</div>
-      <div class="photo-grid" id="viewPhotos"></div></div>` : ''}
+      ${livePhotos(r).length ? '<div class="photo-grid" id="viewPhotos"></div>' : ''}
+      ${archivedNote(r)}</div>` : ''}
 
     <div class="sticky-actions">
       <button class="btn ghost" id="pdfBtn">${icon('down')} Télécharger</button>
@@ -288,6 +289,8 @@ export async function renderReportView(id) {
         if (r.photos?.length) paintViewPhotos(r);
         $('#pdfBtn').onclick   = () => exportFlow(r, g, 'download');
         $('#shareBtn').onclick = () => exportFlow(r, g, 'share');
+        /* Rapport tout juste enregistré : son PDF est proposé d'office. */
+        if (state.pdfOffer === r.id) { state.pdfOffer = null; openPdfOffer(r, g); }
         const mb = $('#moreBtn');
         if (mb) mb.onclick = () => sheet('', `
           <button class="menu-item" id="ed"><span class="ic n">${icon('edit')}</span>
@@ -303,7 +306,13 @@ export async function renderReportView(id) {
                 close();
                 if (!(await confirmSheet('Supprimer le rapport', 'Il disparaîtra pour toute l\'équipe.'))) return;
                 await local.del('reports', r.id);
-                await queue('deleteReport', { id: r.id });
+                /* Ses photos partent avec lui : sur l'offre gratuite,
+                   chaque Mo compte, et plus rien ne les afficherait.
+                   Tous les chemins, envoyés ou non : une photo encore en
+                   route au moment de la suppression est ainsi rattrapée
+                   (supprimer un fichier absent ne coûte rien). */
+                await queue('deleteReport', { id: r.id,
+                  photos: (r.photos || []).filter(p => !p.archived && p.path).map(p => p.path) });
                 sync({ silent: true });
                 toast('Rapport supprimé');
                 go('#/feed');
@@ -344,12 +353,15 @@ function pressureBlock(r, group) {
   ${wst ? `<div class="card pad" style="margin-top:12px">
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:4px">
       <b style="font-size:14.5px">Poids par fruit</b>
-      <span class="muted">moyenne ${fmtG(wst.avg)} g · min ${fmtG(wst.min)} · max ${fmtG(wst.max)} ·
-        ${wst.measures} pesée${wst.measures > 1 ? 's' : ''}</span>
+      <span class="muted">${wst.weighed
+        ? `${wst.weighed} fruits pesés (${wst.fruits} par palette)` : `${wst.measures} poids notés`}${
+        wst.complete ? ` · moyenne ${fmtG(wst.avg)} g · min ${fmtG(wst.min)} · max ${fmtG(wst.max)}` : ''}</span>
     </div>
-    ${wst.under
+    ${!wst.judged
+      ? `<div class="muted" style="margin:6px 0 4px">Poids minimum inconnu pour ces calibres : rien n'est jugé.</div>`
+      : wst.under
       ? `<div class="err-box" style="margin:6px 0 4px"><b>${wst.under} fruit${wst.under > 1 ? 's' : ''} sous-calibré${wst.under > 1 ? 's' : ''}</b>
-           sur ${wst.measures} pesée${wst.measures > 1 ? 's' : ''} — repérés en rouge ci-dessous.</div>`
+           sur ${wst.weighed} pesés — en rouge ci-dessous. Une case vide est un fruit conforme.</div>`
       : `<div class="ok-box" style="margin:6px 0 4px">Aucun fruit sous le poids minimum de son calibre.</div>`}
     ${weightTable(p, cfg, group, new Set(badPallets(r.header)))}
   </div>` : ''}`;
@@ -395,7 +407,7 @@ function receptionBlock(r, grid) {
       ${kpi('Sous-calibre', k.under, tone.under)}${kpi('Défauts légers', k.light, tone.light)}${kpi('Pertes', k.loss, tone.loss)}
     </div>
     ${k.checked ? `<p class="hint" style="margin:8px 0 0">Sur ${k.checked} fruits contrôlés${
-      k.fruits ? ` (${Number(k.fruits).toLocaleString('fr-FR')} fruits dans le lot)` : ''}. Chaque palette pèse son nombre de fruits.</p>` : ''}
+      k.fruits ? ` (${Number(k.fruits).toLocaleString('fr-FR')} fruits dans le lot)` : ''}.</p>` : ''}
   </div>
 
   <div class="card pad" style="margin-top:12px">
@@ -470,6 +482,7 @@ async function paintViewPhotos(r) {
   const grid = $('#viewPhotos');
   if (!grid) return;
   for (const [i, p] of r.photos.entries()) {
+    if (p.archived) continue;
     const blob = p.localId ? (await local.get('photos', p.localId))?.blob : null;
     const src = blob ? URL.createObjectURL(blob) : (p.uploaded ? await storage.signedUrl(p.path) : null);
     if (!src) continue;
@@ -484,6 +497,18 @@ async function paintViewPhotos(r) {
     grid.appendChild(cell);
   }
 }
+/* Photos archivées : retirées de Supabase, elles ne vivent plus que
+   dans les PDF de l'archive. Le rapport le dit, avec la date. */
+const livePhotos = (r) => (r.photos || []).filter(p => !p.archived);
+function archivedNote(r) {
+  const a = (r.photos || []).filter(p => p.archived);
+  if (!a.length) return '';
+  const d = [...new Set(a.map(p => p.archived))].sort().pop();
+  return `<p class="hint" style="margin:${livePhotos(r).length ? '8px' : '0'} 0 0">${a.length} photo${
+    a.length > 1 ? 's archivées' : ' archivée'} le ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)} :
+    ${a.length > 1 ? 'elles figurent' : 'elle figure'} dans le PDF du rapport, dans l'archive de cette période.</p>`;
+}
+
 let viewUrls = [];
 export function releaseViewPhotos() {
   for (const u of viewUrls) { if (u.startsWith('blob:')) URL.revokeObjectURL(u); }
@@ -561,7 +586,10 @@ async function exportFlow(r, g, action) {
                  rééditer en avril un rapport de mars avec les seuils
                  d'avril : une ligne rouge à l'écran disparaissait du
                  document envoyé au client, ou en ressortait verte. */
-              blob = await buildReportPDF(r, gridOf(r, g), { lang: b.dataset.l, company: state.settings.company });
+              /* Relu à l'instant : depuis l'affichage de la fiche, ses
+                 photos ont pu partir sur Supabase. */
+              const cur = (await local.get('reports', r.id)) || r;
+              blob = await buildReportPDF(cur, gridOf(cur, g), { lang: b.dataset.l, company: state.settings.company });
               name = reportFilename(r, g, 'pdf');
             }
             await deliver(blob, name, partage,
@@ -569,6 +597,58 @@ async function exportFlow(r, g, action) {
           } catch (e) { toast('Export : ' + e.message, 'err'); }
         });
       } });
+}
+
+/* Proposé juste après l'enregistrement : c'est le seul moment où les
+   photos existent en PLEINE définition. Ensuite, l'application n'en
+   garde qu'une copie allégée (voir LIGHT_PHOTO, store.js) — un PDF
+   retéléchargé plus tard sortira avec ces copies. « Non merci », un
+   glissement ou un clic à côté referment la proposition ; l'envoi du
+   rapport reprend alors. */
+async function openPdfOffer(r, g) {
+  const full = (r.photos || []).some(p => p.localId && !p.uploaded);
+  const last = (await local.meta('lastLang')) || 'fr';
+  let lang = LANGS[last] ? last : 'fr';
+  let busy = false, closed = false;
+  const resume = () => { releaseReport(r.id); sync({ silent: true }); };
+  sheet('Rapport enregistré', `
+    <p class="muted" style="margin:0 0 12px">${full
+      ? `Téléchargez ou partagez le PDF maintenant : c'est la seule version avec les photos en
+         pleine définition. L'application n'en garde ensuite qu'une copie allégée.`
+      : 'Le PDF du rapport est prêt à partir.'}</p>
+    <div class="chips" id="offLang" style="margin-bottom:12px">${Object.entries(LANGS).map(([k, v]) =>
+      `<button class="chip" data-l="${k}" aria-pressed="${k === lang}">${esc(v)}</button>`).join('')}</div>
+    <div class="btn-row">
+      <button class="btn" id="offDl">${icon('down')} Télécharger</button>
+      <button class="btn" id="offSh">${icon('share')} Partager</button>
+    </div>
+    <button class="btn ghost block" id="offNo" style="margin-top:10px">Non merci</button>`,
+    { onMount(el, close) {
+        el.querySelectorAll('#offLang [data-l]').forEach(b => b.onclick = () => {
+          lang = b.dataset.l;
+          el.querySelectorAll('#offLang [data-l]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+        });
+        const send = async (partage) => {
+          if (busy) return;
+          busy = true;
+          el.querySelectorAll('button').forEach(b => { b.disabled = true; });
+          toast('Génération du PDF…');
+          try {
+            await local.meta('lastLang', lang);
+            const blob = await buildReportPDF(r, gridOf(r, g), { lang, company: state.settings.company });
+            await deliver(blob, reportFilename(r, g, 'pdf'), partage,
+              `${state.settings.company} — ${reportType(r.type).title.toLowerCase()} ${r.header?.lot || r.header?.bl || r.report_no || ''}`);
+          } catch (e) { toast('Export : ' + e.message, 'err'); }
+          busy = false;
+          if (closed) resume(); else close();
+        };
+        el.querySelector('#offDl').onclick = () => send(false);
+        el.querySelector('#offSh').onclick = () => send(true);
+        el.querySelector('#offNo').onclick = close;
+      },
+      /* Fermée pendant la génération : les photos locales servent
+         encore au PDF, l'envoi attend la fin. */
+      onClose() { closed = true; if (!busy) resume(); } });
 }
 
 /* Envoi du fichier : partage natif, ou enregistrement sur l'appareil.

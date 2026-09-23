@@ -16,7 +16,7 @@ import { logoJpeg } from './logo.js';
 import { storage, currentUser } from './supa.js';
 import { local } from './store.js';
 import { countryName, countryNames } from './countries.js';
-import { lotStats, weightLotStats, weightStats, calibreMin,
+import { lotStats, weightLotStats, palletWeighing,
          chartModel, labelledPoints, labelAnchor, fmtP, fmtG,
          refSpec, palletSeverity, pressureVerdict, sevMark, SEV_ORDER, SEV_STEPS, RANGE_TOL } from './pressure.js';
 import { reportType, badPallets } from './report-types.js';
@@ -76,45 +76,70 @@ const T = {
 /* Réception : date du quai, camion, indicateurs du lot et détail
    par palette — dans les cinq langues, comme le reste du rapport. */
 const T_REC = {
-  fr: { arrivalDate:'Date de réception', truck:'N° de camion', kpiTitle:'Indicateurs du lot', under:'Sous-calibre',
+  fr: { lotNo:'N° de lot', arrivalDate:'Date de réception', truck:'N° de camion', kpiTitle:'Indicateurs du lot', under:'Sous-calibre',
         light:'Défauts légers', loss:'Pertes', palletDetail:'Détail par palette', palletsId:'Identification des palettes',
         defectsTitle:'Défauts par palette', underTitle:'Sous-calibre par palette', boxKg:'Colis (kg)', brand:'Marque',
         producer:'Producteur', producers:'Producteurs', checked:'Contrôlés', ext:'Ext.', int:'Int.', lossPct:'Pertes %',
         weighed:'Pesés', underN:'Sous-poids', underW:'Poids sous-calibrés (g)', underPct:'Sous-cal. %',
         badLegend:'Palettes problématiques surlignées en rouge.', toneWarn:'à surveiller', toneFail:'hors tolérance',
-        kpiNote:(c, f) => `Sur ${c} fruits contrôlés${f ? ` (${f} fruits dans le lot)` : ''}. Chaque palette pèse son nombre de fruits.`,
+        photosArchived:(n, d) => `${n} photo${n > 1 ? 's' : ''} archivée${n > 1 ? 's' : ''} le ${d} : ${n > 1 ? 'elles figurent' : 'elle figure'} dans la version archivée de ce rapport.`,
+        weighedLine:(n, f) => `${n} fruits pesés (${f} par palette)`,
+        underOf:(u, w) => `${u} fruit${u > 1 ? 's' : ''} sous-calibré${u > 1 ? 's' : ''} sur ${w} pesés`,
+        noMinWeight:'Poids minimum inconnu pour ces calibres : rien n\'est jugé.',
+        blankOk:'Seuls les fruits sous le poids minimum sont notés : une case vide est un fruit pesé et conforme.',
+        kpiNote:(c, f) => `Sur ${c} fruits contrôlés${f ? ` (${f} fruits dans le lot)` : ''}.`,
         defNote:(b) => `Nombre de fruits touchés, comptés sur ${b} colis ouverts par palette. Pertes : % des fruits contrôlés.` },
-  en: { arrivalDate:'Arrival date', truck:'Truck No.', kpiTitle:'Lot indicators', under:'Undersize',
+  en: { lotNo:'Batch No.', arrivalDate:'Arrival date', truck:'Truck No.', kpiTitle:'Lot indicators', under:'Undersize',
         light:'Minor defects', loss:'Losses', palletDetail:'Pallet details', palletsId:'Pallet identification',
         defectsTitle:'Defects per pallet', underTitle:'Undersize per pallet', boxKg:'Box (kg)', brand:'Brand',
         producer:'Grower', producers:'Growers', checked:'Checked', ext:'Ext.', int:'Int.', lossPct:'Losses %',
         weighed:'Weighed', underN:'Underweight', underW:'Undersized weights (g)', underPct:'Undersize %',
         badLegend:'Problem pallets highlighted in red.', toneWarn:'to monitor', toneFail:'out of tolerance',
-        kpiNote:(c, f) => `Based on ${c} fruit checked${f ? ` (${f} fruit in the lot)` : ''}. Each pallet is weighted by its number of fruit.`,
+        photosArchived:(n, d) => `${n} photo${n > 1 ? 's' : ''} archived on ${d}: see the archived version of this report.`,
+        weighedLine:(n, f) => `${n} fruit weighed (${f} per pallet)`,
+        underOf:(u, w) => `${u} undersized fruit out of ${w} weighed`,
+        noMinWeight:'Minimum weight unknown for these sizes: nothing is assessed.',
+        blankOk:'Only fruit below the minimum weight are recorded: an empty cell is a fruit weighed and compliant.',
+        kpiNote:(c, f) => `Based on ${c} fruit checked${f ? ` (${f} fruit in the lot)` : ''}.`,
         defNote:(b) => `Number of affected fruit, counted in ${b} boxes opened per pallet. Losses: % of fruit checked.` },
-  it: { arrivalDate:'Data di arrivo', truck:'N. camion', kpiTitle:'Indicatori del lotto', under:'Sottocalibro',
+  it: { lotNo:'N. lotto', arrivalDate:'Data di arrivo', truck:'N. camion', kpiTitle:'Indicatori del lotto', under:'Sottocalibro',
         light:'Difetti lievi', loss:'Perdite', palletDetail:'Dettaglio per pallet', palletsId:'Identificazione dei pallet',
         defectsTitle:'Difetti per pallet', underTitle:'Sottocalibro per pallet', boxKg:'Collo (kg)', brand:'Marchio',
         producer:'Produttore', producers:'Produttori', checked:'Controllati', ext:'Est.', int:'Int.', lossPct:'Perdite %',
         weighed:'Pesati', underN:'Sottopeso', underW:'Pesi sottocalibro (g)', underPct:'Sottocal. %',
         badLegend:'Pallet problematici evidenziati in rosso.', toneWarn:'da monitorare', toneFail:'fuori tolleranza',
-        kpiNote:(c, f) => `Su ${c} frutti controllati${f ? ` (${f} frutti nel lotto)` : ''}. Ogni pallet pesa per il suo numero di frutti.`,
+        photosArchived:(n, d) => `${n} foto archiviat${n > 1 ? 'e' : 'a'} il ${d}: ${n > 1 ? 'sono' : 'è'} nella versione archiviata di questo rapporto.`,
+        weighedLine:(n, f) => `${n} frutti pesati (${f} per pallet)`,
+        underOf:(u, w) => `${u} frutt${u > 1 ? 'i' : 'o'} sottocalibro su ${w} pesati`,
+        noMinWeight:'Peso minimo sconosciuto per questi calibri: nulla viene valutato.',
+        blankOk:'Si annotano solo i frutti sotto il peso minimo: una casella vuota è un frutto pesato e conforme.',
+        kpiNote:(c, f) => `Su ${c} frutti controllati${f ? ` (${f} frutti nel lotto)` : ''}.`,
         defNote:(b) => `Numero di frutti colpiti, contati su ${b} colli aperti per pallet. Perdite: % dei frutti controllati.` },
-  es: { arrivalDate:'Fecha de llegada', truck:'N.º de camión', kpiTitle:'Indicadores del lote', under:'Subcalibre',
+  es: { lotNo:'N.º de lote', arrivalDate:'Fecha de llegada', truck:'N.º de camión', kpiTitle:'Indicadores del lote', under:'Subcalibre',
         light:'Defectos leves', loss:'Pérdidas', palletDetail:'Detalle por palé', palletsId:'Identificación de los palés',
         defectsTitle:'Defectos por palé', underTitle:'Subcalibre por palé', boxKg:'Caja (kg)', brand:'Marca',
         producer:'Productor', producers:'Productores', checked:'Controlados', ext:'Ext.', int:'Int.', lossPct:'Pérdidas %',
         weighed:'Pesados', underN:'Bajo peso', underW:'Pesos subcalibre (g)', underPct:'Subcal. %',
         badLegend:'Palés problemáticos resaltados en rojo.', toneWarn:'a vigilar', toneFail:'fuera de tolerancia',
-        kpiNote:(c, f) => `Sobre ${c} frutos controlados${f ? ` (${f} frutos en el lote)` : ''}. Cada palé pondera según su número de frutos.`,
+        photosArchived:(n, d) => `${n} foto${n > 1 ? 's' : ''} archivada${n > 1 ? 's' : ''} el ${d}: ${n > 1 ? 'figuran' : 'figura'} en la versión archivada de este informe.`,
+        weighedLine:(n, f) => `${n} frutos pesados (${f} por palé)`,
+        underOf:(u, w) => `${u} fruto${u > 1 ? 's' : ''} subcalibrado${u > 1 ? 's' : ''} de ${w} pesados`,
+        noMinWeight:'Peso mínimo desconocido para estos calibres: no se evalúa nada.',
+        blankOk:'Solo se anotan los frutos por debajo del peso mínimo: una casilla vacía es un fruto pesado y conforme.',
+        kpiNote:(c, f) => `Sobre ${c} frutos controlados${f ? ` (${f} frutos en el lote)` : ''}.`,
         defNote:(b) => `Número de frutos afectados, contados en ${b} cajas abiertas por palé. Pérdidas: % de los frutos controlados.` },
-  nl: { arrivalDate:'Aankomstdatum', truck:'Vrachtwagennr.', kpiTitle:'Kerncijfers partij', under:'Ondermaat',
+  nl: { lotNo:'Partijnummer', arrivalDate:'Aankomstdatum', truck:'Vrachtwagennr.', kpiTitle:'Kerncijfers partij', under:'Ondermaat',
         light:'Lichte gebreken', loss:'Verliezen', palletDetail:'Details per pallet', palletsId:'Identificatie van de pallets',
         defectsTitle:'Gebreken per pallet', underTitle:'Ondermaat per pallet', boxKg:'Colli (kg)', brand:'Merk',
         producer:'Teler', producers:'Telers', checked:'Gecontroleerd', ext:'Uitw.', int:'Inw.', lossPct:'Verlies %',
         weighed:'Gewogen', underN:'Ondergewicht', underW:'Gewichten ondermaat (g)', underPct:'Ondermaat %',
         badLegend:'Probleempallets rood gemarkeerd.', toneWarn:'aandachtspunt', toneFail:'buiten tolerantie',
-        kpiNote:(c, f) => `Op ${c} gecontroleerde vruchten${f ? ` (${f} vruchten in de partij)` : ''}. Elke pallet weegt naar zijn aantal vruchten.`,
+        photosArchived:(n, d) => `${n} foto${n > 1 ? "'s" : ''} gearchiveerd op ${d}: zie de gearchiveerde versie van dit rapport.`,
+        weighedLine:(n, f) => `${n} vruchten gewogen (${f} per pallet)`,
+        underOf:(u, w) => `${u} ${u > 1 ? 'vruchten' : 'vrucht'} onder maat van ${w} gewogen`,
+        noMinWeight:'Minimumgewicht onbekend voor deze maten: niets wordt beoordeeld.',
+        blankOk:'Alleen vruchten onder het minimumgewicht worden genoteerd: een leeg vak is een gewogen, conforme vrucht.',
+        kpiNote:(c, f) => `Op ${c} gecontroleerde vruchten${f ? ` (${f} vruchten in de partij)` : ''}.`,
         defNote:(b) => `Aantal aangetaste vruchten, geteld in ${b} geopende colli per pallet. Verliezen: % van de gecontroleerde vruchten.` }
 };
 for (const l of Object.keys(T_REC)) Object.assign(T[l], T_REC[l]);
@@ -325,15 +350,23 @@ const fmtDate = (iso) => {
    cinq, sans un mot, et la différence passait pour une négligence de
    l'inspecteur. */
 async function photoBytes(report, max = 8) {
-  const all = report.photos || [];
+  /* Une photo archivée n'est plus sur Supabase : elle est comptée à
+     part, et le PDF le dit avec la date — ce n'est pas une panne. */
+  const arch = (report.photos || []).filter(p => p.archived);
+  const all = (report.photos || []).filter(p => !p.archived);
   const out = [];
   for (const p of all.slice(0, max)) {
     let blob = null;
     if (p.localId) blob = (await local.get('photos', p.localId))?.blob || null;
-    if (!blob && p.uploaded) blob = await storage.download(p.path).catch(() => null);
+    /* Sans copie locale, la photo est sur Supabase — même si l'objet
+       rapport tenu par l'écran la croit encore « à envoyer » : elle est
+       partie entre-temps. Un fichier absent répond simplement null. */
+    if (!blob && p.path) blob = await storage.download(p.path).catch(() => null);
     if (blob) out.push(new Uint8Array(await blob.arrayBuffer()));
   }
   out.missing = all.length - out.length;
+  out.archived = arch.length;
+  out.archivedOn = arch.map(p => p.archived).sort().pop() || '';
   return out;
 }
 
@@ -366,6 +399,9 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
   doc.row(t.date, `${fmtDate(report.report_date)} (${t.wk}${isoWeek(d)})`);
   if (h.department) doc.row(t.dept, h.department);
   doc.row(t.group, tr(lang, group?.name) || report.product_group_id || '');
+  /* Le n° de lot en tête : c'est par lui qu'on retrouve la marchandise.
+     Il n'était que dans le tableau Résumé. */
+  if (isShip ? h.bl : h.lot) doc.row(isShip ? t.bl : t.lotNo, isShip ? h.bl : h.lot);
   const origins = originList(h);
   if (origins.length) doc.row(origins.length > 1 ? t.origins : t.origin, countryNames(origins, lang));
   if (h.carrier) doc.row(t.carrier, h.carrier);
@@ -396,7 +432,7 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
         s:  { v: tv(lang, s.shelf),   s: SHELF_STATUS[s.shelf] },
         v:  { v: tv(lang, s.verdict), s: VERDICT_STATUS[s.verdict] },
         nc: s.nc == null ? '' : String(s.nc),
-        pal: fmt(m.pal_count), bad: badCell(h), lot: (isShip ? h.bl : h.lot) || '' } ]
+        pal: fmt(m.pal_count), bad: badCell(h, t), lot: (isShip ? h.bl : h.lot) || '' } ]
   );
 
   /* -- Indicateurs de la réception : en tête, c'est ce que le
@@ -512,7 +548,7 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
 
   /* -- Photos -- */
   const imgs = await photoBytes(report);
-  if (imgs.length || imgs.missing) {
+  if (imgs.length || imgs.missing || imgs.archived) {
     doc.sectionTitle(t.photos);
     const cols = 3, gap = 10;
     const w = (PAGE.w - 2 * MARGIN - gap * (cols - 1)) / cols;
@@ -529,6 +565,13 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
       doc.need(16);
       doc.text(t.photosMissing(imgs.missing), MARGIN, doc.y + 8,
         { size: 8, color: COLORS.GREY });
+      doc.y += 12;
+    }
+    if (imgs.archived > 0) {
+      const d = imgs.archivedOn;
+      doc.need(16);
+      doc.text(t.photosArchived(imgs.archived, d ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : ''),
+        MARGIN, doc.y + 8, { size: 8, color: COLORS.GREY });
       doc.y += 12;
     }
   }
@@ -694,16 +737,20 @@ function drawPressures(doc, pressures, stats, t, lang, spec, pv, ripe, bad = [])
      la preuve — c'est lui qu'on oppose à un fournisseur. La colonne
      État nomme la gravité, pour que la couleur ne soit jamais seule. */
   const fruits = pressures.fruits || 5, sides = pressures.sides || 2;
-  const cols = [{ k: 'n', h: t.pallet, w: 42 }];
+  /* « # » : le rang sur le graphique ; le n° réel de la palette prend
+     la largeur de son texte (18 chiffres chez certains fournisseurs). */
+  const cols = [{ k: 'i', h: '#', w: 10, fit: true }, { k: 'n', h: t.pallet, w: 42, fit: true }];
   for (let fI = 1; fI <= fruits; fI++)
     for (let sI = 1; sI <= sides; sI++)
       cols.push({ k: `v${(fI - 1) * sides + (sI - 1)}`, h: sides > 1 ? `F${fI}·${sI}` : `F${fI}`, w: 38 });
   cols.push({ k: 'avg', h: t.average, w: 46 });
-  /* « Scostamento critico » est le libellé le plus long des cinq
-     langues : la colonne est taillée pour qu'il tienne sur une ligne. */
-  if (spec) cols.push({ k: 'st', h: t.pressState, w: 104 });
+  /* La colonne État prend la largeur de son libellé le plus long dans
+     ce rapport (« Scostamento critico » en italien) : il tient sur une
+     ligne, et les colonnes de mesures gardent le reste. */
+  if (spec) cols.push({ k: 'st', h: t.pressState, w: 40, fit: true });
 
   const badSet = new Set(bad);
+  let rank = 0;
   doc.table(cols, (pressures.pallets || []).map(pal => {
     const nm = String(pal.n ?? '');
     const row = badSet.has(nm.trim()) ? { _bg: BAD_BG, n: { v: nm, bold: true, color: COLORS.RED } } : { n: nm };
@@ -713,6 +760,7 @@ function drawPressures(doc, pressures, stats, t, lang, spec, pv, ripe, bad = [])
       if (v !== '' && v != null && isFinite(Number(v))) vals.push(Number(v));
     });
     if (!vals.length) { row.avg = ''; row.st = ''; return row; }
+    row.i = { v: String(++rank), color: COLORS.GREY };
     const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
     const sev = palletSeverity(avg, spec);
     row.avg = sev ? { v: fmtP(avg), color: COLORS.SEV_INK[sev.level], bold: true } : fmtP(avg);
@@ -741,20 +789,21 @@ function drawWeights(doc, pressures, stats, group, t, lang, bad = []) {
   doc.need(90);
   doc.sectionTitle(t.weightsTitle);
 
+  /* Tous les fruits de la pression sont pesés ; seuls les trop légers
+     sont forcément notés. La ligne dit donc combien de fruits ont été
+     pesés, et la moyenne n'apparaît que si tous les poids sont notés. */
   doc.need(18);
-  doc.text(`${t.weightAvg} ${fmtG(stats.avg)} g · min ${fmtG(stats.min)} · max ${fmtG(stats.max)} · ` +
-           `${stats.measures} ${t.weighings}`,
+  doc.text((stats.weighed ? t.weighedLine(stats.weighed, stats.fruits) : `${stats.measures} ${t.weighings}`) +
+           (stats.complete ? ` · ${t.weightAvg} ${fmtG(stats.avg)} g · min ${fmtG(stats.min)} · max ${fmtG(stats.max)}` : ''),
            MARGIN, doc.y + 8, { size: 8.6, color: COLORS.GREY });
   doc.y += 15;
 
   doc.need(16);
-  doc.text(stats.under
-      ? `${stats.under} ${stats.under > 1 ? t.underMany : t.underOne}`
-      : t.underNone,
-    MARGIN, doc.y + 8, { size: 9, bold: true, color: stats.under ? COLORS.RED : COLORS.GREEN });
+  doc.text(!stats.judged ? t.noMinWeight : stats.under ? t.underOf(stats.under, stats.weighed) : t.underNone,
+    MARGIN, doc.y + 8, { size: 9, bold: true, color: !stats.judged ? COLORS.GREY : stats.under ? COLORS.RED : COLORS.GREEN });
   doc.y += 18;
 
-  const cols = [{ k: 'n', h: t.pallet, w: 76 }, { k: 'cal', h: t.calibre, w: 44 }];
+  const cols = [{ k: 'n', h: t.pallet, w: 60, fit: true }, { k: 'cal', h: t.calibre, w: 44 }];
   for (let f = 1; f <= fruits; f++) cols.push({ k: 'w' + (f - 1), h: `F${f}`, w: 40 });
   cols.push({ k: 'avg', h: t.average, w: 46 }, { k: 'min', h: t.minRequired, w: 50 },
             { k: 'un', h: t.underN, w: 50 }, { k: 'up', h: t.underPct, w: 48 });
@@ -762,23 +811,25 @@ function drawWeights(doc, pressures, stats, group, t, lang, bad = []) {
   doc.table(cols, (pressures.pallets || [])
     .filter(pal => (pal.w || []).some(v => v !== '' && v != null))
     .map(pal => {
-      const min = calibreMin(group, pal.cal);
-      const st = weightStats(pal, min);
+      const s = palletWeighing(pal, group, fruits);
       const nm = String(pal.n ?? '');
-      const row = { n: nm, cal: pal.cal || '', min: min != null ? fmtG(min) : '' };
+      const row = { n: nm, cal: pal.cal || '', min: s.min != null ? fmtG(s.min) : '' };
       if (badSet.has(nm.trim())) { row._bg = BAD_BG; row.n = { v: nm, bold: true, color: COLORS.RED }; }
-      if (st && min != null) {
-        row.un = st.under ? { v: `${st.under}/${st.n}`, bold: true, color: COLORS.RED } : `0/${st.n}`;
-        row.up = pctTxt((st.under / st.n) * 100, lang, 0);
+      if (s.min != null && s.weighed) {
+        row.un = s.under ? { v: `${s.under}/${s.weighed}`, bold: true, color: COLORS.RED } : `0/${s.weighed}`;
+        row.up = pctTxt(s.pct, lang, 0);
       }
       (pal.w || []).forEach((v, i) => {
         if (v === '' || v == null) { row['w' + i] = ''; return; }
-        const under = min != null && Number(v) < min;
+        const under = s.min != null && Number(v) < s.min;
         row['w' + i] = under ? { v: fmtG(v), color: COLORS.RED, bold: true } : fmtG(v);
       });
-      row.avg = st ? fmtG(st.avg) : '';
+      row.avg = s.avg != null ? fmtG(s.avg) : '';
       return row;
     }));
+  doc.need(12);
+  doc.text(t.blankOk, MARGIN, doc.y + 2, { size: 7.6, color: COLORS.GREY });
+  doc.y += 10;
 }
 
 /* Fond des palettes problématiques : un rouge très pâle, qui laisse
@@ -814,7 +865,7 @@ function drawReceptionPallets(doc, h, group, t, lang) {
   if (ident) {
   doc.subhead(t.palletsId);
   doc.table([
-      { k: 'n', h: t.pallet, w: 96 }, { k: 'va', h: t.variety, w: 60 }, { k: 'kg', h: t.boxKg, w: 42 },
+      { k: 'n', h: t.pallet, w: 60, fit: true }, { k: 'va', h: t.variety, w: 60 }, { k: 'kg', h: t.boxKg, w: 42 },
       { k: 'c', h: t.calibre, w: 42 }, { k: 'ca', h: t.category, w: 48 }, { k: 'b', h: t.brand, w: 54 },
       { k: 'g', h: 'GGN', w: 82 }, { k: 'o', h: t.origin, w: 54 }, { k: 'bx', h: t.boxes, w: 40 } ],
     rs.rows.map(x => ({ ...mark(x.n), va: x.p.variety || '', kg: x.p.boxKg ? numTxt(x.p.boxKg, lang) : '',
@@ -844,7 +895,7 @@ function drawReceptionPallets(doc, h, group, t, lang) {
   if (rs.defs.length && rs.sampled) {
     doc.need(120);
     doc.subhead(t.defectsTitle);
-    const cols = [{ k: 'n', h: t.pallet, w: 96 }, { k: 'ck', h: t.checked, w: 44 },
+    const cols = [{ k: 'n', h: t.pallet, w: 60, fit: true }, { k: 'ck', h: t.checked, w: 44 },
       ...rs.defs.map(d => ({ k: 'd_' + d.key, h: trLabel(lang, d.label, d.i18n), w: 30, rot: true })),
       { k: 'e', h: t.ext, w: 30 }, { k: 'i', h: t.int, w: 30 }, { k: 'l', h: t.lossPct, w: 46 }];
     doc.table(cols, rs.rows.map(x => {
@@ -871,20 +922,28 @@ function drawReceptionPallets(doc, h, group, t, lang) {
 
 /* Palettes problématiques : le NOMBRE d'abord — c'est ce que le client
    lit —, les numéros ensuite pour que le fournisseur sache lesquelles
-   aller voir. Le champ n'en acceptait qu'une seule. */
-function badCell(h) {
+   aller voir. Plusieurs n° longs (18 chiffres chez certains
+   fournisseurs) ne tiennent pas dans la case du Résumé : on n'en donne
+   alors que le nombre — elles sont surlignées dans les tableaux. */
+function badCell(h, t) {
   const list = badPallets(h);
   if (!list.length) return '';
-  return list.length === 1 ? list[0] : `${list.length} — ${list.join(', ')}`;
+  if (list.length === 1) return list[0];
+  if (list.some(n => String(n).length > 10))
+    return `${list.length} ${t?.palletsWord || 'palettes'}`;
+  return `${list.length} — ${list.join(', ')}`;
 }
 
 const DP2 = { step: 0.01 };
 const fmt = (v, field) => {
   if (v === null || v === undefined || v === '') return '';
   if (typeof v !== 'number') return String(v);
-  const twoDp = field ? (field.step === 0.01 || field.type === 'pct') : false;
-  if (twoDp) return v.toFixed(2);
-  return Number.isInteger(v) ? String(v) : v.toFixed(2);
+  /* Deux décimales pour une mesure (elle porte une unité : kg, °C…) ou
+     un pourcentage. Un comptage sans unité reste un comptage, même s'il
+     accepte les demi-palettes : « 21 », « 1.5 » — pas « 21.00 ». */
+  const measure = field ? (field.type === 'pct' || (Number(field.step) === 0.01 && !!field.unit)) : false;
+  if (measure) return v.toFixed(2);
+  return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
 };
 
 function splitToWidth(str, size, maxW) {

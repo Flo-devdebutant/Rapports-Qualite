@@ -9,7 +9,7 @@ import { fieldStatus, FIELD_ROLES, fieldRole, effSeverity, flatFields,
 import { allDrafts } from './form.js';
 import { defectTypes, samplingCfg, pressureRequired, resolveLink, DEFECT_KINDS, DEFECT_WHERE } from './reception.js';
 import { LANGS, builtinTranslation } from './report-pdf.js';
-import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS, LIMITS, clampP } from './pressure.js';
+import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS, LIMITS, clampP, sizeTableOf, boxKey } from './pressure.js';
 import { PACKAGING_KINDS, TYPE_LIST, TYPE_IDS, reportType, appliesTo, typesLabel,
          isHidden, fieldLive, normalizeSections } from './report-types.js';
 import { $, $$, esc, icon, toast, sheet, confirmSheet, getTheme, setTheme } from './ui.js';
@@ -25,7 +25,9 @@ export function renderSettings() {
       <button class="menu-item" data-go="#/settings/partners"><span class="ic n">${icon('truck')}</span>
         <span class="tx"><b>Carnet d'adresses</b><span>${state.partners.length} enregistré${state.partners.length > 1 ? 's' : ''}</span></span><span class="chev">›</span></button>
       <button class="menu-item" data-go="#/settings/users"><span class="ic n">${icon('users')}</span>
-        <span class="tx"><b>Équipe</b><span>Valider et gérer les accès</span></span><span class="chev">›</span></button>` : ''}
+        <span class="tx"><b>Équipe</b><span>Valider et gérer les accès</span></span><span class="chev">›</span></button>
+      <button class="menu-item" data-go="#/settings/photos"><span class="ic n">${icon('image')}</span>
+        <span class="tx"><b>Photos et espace</b><span>Place occupée, archivage d'une période</span></span><span class="chev">›</span></button>` : ''}
       <button class="menu-item" id="themeBtn"><span class="ic n">${icon('theme')}</span>
         <span class="tx"><b>Apparence</b><span>${themeLabel()}</span></span><span class="chev">›</span></button>
       <button class="menu-item" data-go="#/settings/account"><span class="ic n">${icon('badge')}</span>
@@ -230,14 +232,15 @@ function scopePill(item, live, sec) {
   return '';
 }
 
-/* Après un redessin, on rouvre la section sur laquelle on travaillait :
-   déplacer un critère d'un cran ne doit pas refermer la grille et
-   renvoyer en haut de page. */
-function openSection(si) {
+/* Après un redessin, on rouvre la section sur laquelle on travaillait.
+   La page garde déjà sa position (renderGroupEditor) : on ne la fait
+   défiler que pour SUIVRE une section qu'on vient de déplacer d'un
+   cran — sans quoi elle quitterait l'écran sous le doigt. */
+function openSection(si, follow = false) {
   const d = document.querySelector(`details.sec[data-si="${si}"]`);
   if (!d) return;
   d.open = true;
-  d.scrollIntoView({ block: 'nearest' });
+  if (follow) d.querySelector('summary')?.scrollIntoView({ block: 'nearest' });
 }
 
 const weightsHtml = (cfg) => (cfg.calibres || []).map(c => `
@@ -256,6 +259,16 @@ const weightsHtml = (cfg) => (cfg.calibres || []).map(c => `
 export function renderGroupEditor(id, fresh = false) {
   const g = state.groups.find(x => x.id === id);
   if (!g) { toast('Groupe introuvable', 'err'); return go('#/settings/groups'); }
+  /* Redessin de la même grille après un enregistrement : on garde les
+     sections ouvertes (par leur identifiant, pas leur rang — une
+     section déplacée ne rouvre pas sa voisine) et la position dans la
+     page. Sans cela, chaque modification renvoyait tout en haut, toutes
+     sections fermées. Une feuille encore ouverte tient déjà la position
+     (lockScroll) : elle la rendra en se fermant. */
+  const again = !fresh && gridTypeOwner === id && !!document.querySelector('details.sec[data-sid]');
+  const keepOpen = again ? [...document.querySelectorAll('details.sec[open]')]
+    .map(d => d.dataset.sid || `#${d.dataset.si}`) : [];
+  const keepY = again && document.body.style.position !== 'fixed' ? window.scrollY : null;
   if (fresh || gridTypeOwner !== id) { gridType = ''; gridTypeOwner = id; }
   /* Remise d'aplomb : une grille où la portée d'un critère sortait de
      celle de sa section produisait une section présente dans aucun
@@ -264,6 +277,9 @@ export function renderGroupEditor(id, fresh = false) {
   if (normalizeSections(g.config?.sections)) saveGroup(g).catch(() => {});
   const cfg = g.config || {};
   const pr = pressureConfig(g);
+  /* Table des poids par colis, éditée en mémoire et écrite par
+     readHeader() avec le reste de l'en-tête. */
+  const tbl = structuredClone(sizeTableOf(g) || { boxes: [], rows: [] });
 
   shell(g.name, `
     <div class="card pad">
@@ -299,10 +315,27 @@ export function renderGroupEditor(id, fresh = false) {
 
     <div class="card pad" style="margin-top:12px">
       <h3 style="font-size:14.5px;margin-bottom:4px">Poids minimum par calibre</h3>
-      <p class="muted" style="margin:0 0 12px">Au contrôle production, un fruit pesé sous ce seuil
-      est signalé comme sous-calibré. Laissez vide pour ne rien contrôler sur ce calibre.
-      Le poids maximum n'est pas vérifié : un fruit plus gros profite au client.</p>
+      <p class="muted" style="margin:0 0 12px">À la réception comme au contrôle production, un fruit
+      pesé sous ce seuil est signalé comme sous-calibré. Laissez vide pour ne rien contrôler sur ce
+      calibre. Le poids maximum n'est pas vérifié : un fruit plus gros profite au client.</p>
       <div class="wgrid">${weightsHtml(cfg)}</div>
+    </div>
+
+    <!-- Mangue : le calibre dépend du colis. La table reprend la feuille
+         du quai « Cal selon pack / ± poids ». -->
+    <div class="card pad" style="margin-top:12px">
+      <h3 style="font-size:14.5px;margin-bottom:4px">Poids par calibre selon le colis</h3>
+      <p class="muted" style="margin:0 0 12px">Quand le calibre dépend du poids du colis (mangue :
+        un calibre 10 pèse 250–315 g en colis de 3 kg, 600–725 g en 6 kg), chaque ligne donne une
+        tranche de poids et le calibre correspondant pour chaque colis. Elle prime sur le poids
+        minimum ci-dessus. Sans table, le calibre ne dépend pas du colis (avocat).</p>
+      <div id="stBox"></div>
+      <div class="st-add">
+        <button type="button" class="btn ghost sm" id="stAddRow">${icon('plus')} Ligne</button>
+        <span class="st-kg"><input type="number" id="stKg" min="0.5" step="0.5" inputmode="decimal"
+          placeholder="kg" aria-label="Poids du colis à ajouter (kg)">
+        <button type="button" class="btn ghost sm" id="stAddBox">${icon('plus')} Colis</button></span>
+      </div>
     </div>
 
     <!-- Réception : pressions obligatoires, échantillon et défauts
@@ -369,7 +402,7 @@ export function renderGroupEditor(id, fresh = false) {
       const count = gridType ? all.filter(f => fieldLive(sec, f, gridType)).length : all.length;
       const last  = (cfg.sections || []).length - 1;
       return `
-      <details class="sec${live ? '' : ' off'}" data-si="${si}">
+      <details class="sec${live ? '' : ' off'}" data-si="${si}" data-sid="${esc(sec.id || '')}">
         <summary>${esc(sec.label)} <span class="count">${count}</span>
         ${scopePill(sec, live)} <span class="caret">▾</span></summary>
         <div class="body">
@@ -427,6 +460,17 @@ export function renderGroupEditor(id, fresh = false) {
         const reqEl = $('#prReq');
         if (reqEl) reqEl.onchange = readHeader;
         paintDefects(g);
+        paintSizeTable(tbl);
+        $('#stAddRow').onclick = () => {
+          if (!tbl.boxes.length) return toast('Ajoutez d\'abord un colis (son poids en kg).', 'err');
+          tbl.rows.push({ min: '', max: '', cal: {} }); paintSizeTable(tbl);
+        };
+        $('#stAddBox').onclick = () => {
+          const k = boxKey($('#stKg').value);
+          if (!k) return toast('Indiquez le poids du colis en kg.', 'err');
+          if (tbl.boxes.map(boxKey).includes(k)) return toast(`Le colis de ${k} kg est déjà dans la table.`, 'err');
+          tbl.boxes.push(k); $('#stKg').value = ''; paintSizeTable(tbl);
+        };
         $$('[data-cal]').forEach(i => i.oninput = readHeader);
         /* Les calibres commandent la liste des poids minimums : on
            redessine cette liste quand ils changent, en conservant les
@@ -460,6 +504,7 @@ export function renderGroupEditor(id, fresh = false) {
             unit:   pr.unit,
             ...(req ? { requiredFor: req.checked ? ['reception'] : [] } : {})
           };
+          g.config.sizeTable = cleanSizeTable(tbl);
           if ($('#smpB')) {
             const kg = num(v('#smpK'));
             g.config.sampling = { boxes: Math.max(1, num(v('#smpB')) ?? samplingCfg(g).boxes),
@@ -516,7 +561,7 @@ export function renderGroupEditor(id, fresh = false) {
           if (j < 0 || j >= list.length) return;
           readHeader(); swap(list, si, j);
           await saveGroup(g); renderGroupEditor(id);
-          openSection(j);
+          openSection(j, true);
         });
 
         $$('[data-mf]').forEach(el => el.onclick = async () => {
@@ -638,6 +683,65 @@ export function renderGroupEditor(id, fresh = false) {
           go('#/settings/groups');
         };
       } });
+  if (keepOpen.length) {
+    for (const d of document.querySelectorAll('details.sec')) {
+      if (keepOpen.includes(d.dataset.sid || `#${d.dataset.si}`)) d.open = true;
+    }
+  }
+  if (keepY != null) window.scrollTo(0, keepY);
+}
+
+/* Table des poids par colis : une colonne par colis, une ligne par
+   tranche de poids. Les saisies modifient la table en mémoire ; seules
+   l'ajout et la suppression redessinent. */
+function paintSizeTable(tbl) {
+  const box = $('#stBox');
+  if (!box) return;
+  const boxes = tbl.boxes || [];
+  if (!boxes.length && !tbl.rows.length) {
+    box.innerHTML = '<p class="hint" style="margin:0">Aucune table : le calibre ne dépend pas du colis. ' +
+      'Indiquez un poids de colis et touchez « Colis » pour en créer une.</p>';
+    return;
+  }
+  box.innerHTML = `<div class="st-wrap"><table class="st-table">
+    <thead><tr>${boxes.map((b, j) => `<th>Colis ${esc(b)} kg<button type="button" class="st-x" data-stdelbox="${j}"
+        aria-label="Retirer le colis de ${esc(b)} kg">×</button></th>`).join('')}
+      <th>Poids min (g)</th><th>Poids max (g)</th><th></th></tr></thead>
+    <tbody>${tbl.rows.map((r, i) => `<tr>${boxes.map(b => `<td><input type="text" inputmode="numeric"
+        data-stc="${i}" data-box="${esc(b)}" value="${esc(r.cal?.[b] ?? '')}" placeholder="—"
+        aria-label="Calibre en colis de ${esc(b)} kg, ligne ${i + 1}"></td>`).join('')}
+      <td><input type="number" min="0" step="1" inputmode="numeric" data-stmin="${i}" value="${r.min ?? ''}"
+        aria-label="Poids minimum, ligne ${i + 1}"></td>
+      <td><input type="number" min="0" step="1" inputmode="numeric" data-stmax="${i}" value="${r.max ?? ''}"
+        aria-label="Poids maximum, ligne ${i + 1}"></td>
+      <td><button type="button" class="st-x" data-stdel="${i}" aria-label="Retirer la ligne ${i + 1}">×</button></td></tr>`).join('')}
+    </tbody></table></div>`;
+  box.querySelectorAll('[data-stc]').forEach(inp => inp.oninput = () => {
+    const r = tbl.rows[+inp.dataset.stc];
+    (r.cal ||= {})[inp.dataset.box] = inp.value.trim();
+  });
+  box.querySelectorAll('[data-stmin]').forEach(inp => inp.oninput = () => { tbl.rows[+inp.dataset.stmin].min = inp.value; });
+  box.querySelectorAll('[data-stmax]').forEach(inp => inp.oninput = () => { tbl.rows[+inp.dataset.stmax].max = inp.value; });
+  box.querySelectorAll('[data-stdel]').forEach(b => b.onclick = () => { tbl.rows.splice(+b.dataset.stdel, 1); paintSizeTable(tbl); });
+  box.querySelectorAll('[data-stdelbox]').forEach(b => b.onclick = () => {
+    const k = tbl.boxes[+b.dataset.stdelbox];
+    tbl.boxes.splice(+b.dataset.stdelbox, 1);
+    for (const r of tbl.rows) if (r.cal) delete r.cal[k];
+    paintSizeTable(tbl);
+  });
+}
+
+/* Ce qui s'enregistre : colis normalisés (« 4.0 » → « 4 »), lignes
+   vides écartées. Une table vidée reste enregistrée vide : la table de
+   l'application ne revient pas d'elle-même. */
+function cleanSizeTable(tbl) {
+  const boxes = [...new Set((tbl.boxes || []).map(boxKey).filter(Boolean))];
+  const n = (v) => (v === '' || v == null || !isFinite(Number(v)) ? null : Number(v));
+  const rows = (tbl.rows || []).map(r => ({
+    min: n(r.min), max: n(r.max),
+    cal: Object.fromEntries(boxes.map(b => [b, String(r.cal?.[b] ?? '').trim()]).filter(([, c]) => c))
+  })).filter(r => r.min != null || r.max != null || Object.keys(r.cal).length);
+  return { boxes, rows };
 }
 
 /* « calibre 16 : 16 fruits par colis de 4 kg, 160 contrôlés » — la

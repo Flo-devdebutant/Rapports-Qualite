@@ -6,16 +6,19 @@ import { local } from './store.js';
 import { $, $$, esc, icon, toast } from './ui.js';
 import { exportXlsx, originList } from './reports.js';
 import { countryName } from './countries.js';
+import { TYPE_LIST } from './report-types.js';
 
 /* Un tableau, pas un objet : les clés numériques d'un objet sont
    réordonnées par le moteur et « Tout » remonterait en tête. */
 const PERIODS = [[30, '30 jours'], [90, '3 mois'], [365, '12 mois'], [0, 'Tout']];
 let period = 90;
+/* Types de rapports retenus : un ou plusieurs ; vide = tous. */
+const types = new Set();
 
 export async function renderStats() {
   const all = (await local.all('reports')).filter(r => !r.deleted && !r._draft);
   const since = period ? Date.now() - period * 86400000 : 0;
-  const rows = all.filter(r => new Date(r.report_date).getTime() >= since);
+  const rows = all.filter(r => new Date(r.report_date).getTime() >= since && (!types.size || types.has(r.type)));
 
   const nc = rows.filter(r => r.summary?.verdict === 'Non Conforme').length;
   const acc = rows.filter(r => r.summary?.verdict === 'Acceptable').length;
@@ -23,9 +26,14 @@ export async function renderStats() {
   const avgStars = avg(rows.map(r => r.summary?.stars).filter(Boolean));
 
   shell('Statistiques', `
-    <div class="chips" style="margin-bottom:12px">
+    <div class="chips" style="margin-bottom:8px">
       ${PERIODS.map(([d, l]) =>
         `<button class="chip" data-p="${d}" aria-pressed="${d === period}">${l}</button>`).join('')}
+    </div>
+    <div class="chips" id="stTypes" style="margin-bottom:12px" aria-label="Types de rapports, un ou plusieurs">
+      <button class="chip" data-ty="" aria-pressed="${!types.size}">Tous les rapports</button>
+      ${TYPE_LIST.map(T => `<button class="chip" data-ty="${T.id}" aria-pressed="${types.has(T.id)}">${
+        icon(T.icon)} ${esc(T.short)}</button>`).join('')}
     </div>
 
     <div class="stat-grid">
@@ -51,11 +59,21 @@ export async function renderStats() {
     ${topDefects(rows)}
 
     <div class="btn-row" style="margin-top:16px">
-      <button class="btn ghost block" id="xls">${icon('excel')} Exporter la période en Excel</button>
+      <button class="btn ghost block" id="xls">${icon('excel')} Exporter la sélection en Excel</button>
     </div>`,
     { back: () => back('#/'),
       onMount() {
         $$('[data-p]').forEach(b => b.onclick = () => { period = +b.dataset.p; renderStats(); });
+        /* Un type se coche et se décoche ; « Tous » efface la sélection,
+           et cocher tous les types revient à « Tous ». */
+        $$('[data-ty]').forEach(b => b.onclick = () => {
+          const t = b.dataset.ty;
+          if (!t) types.clear();
+          else if (types.has(t)) types.delete(t);
+          else types.add(t);
+          if (types.size === TYPE_LIST.length) types.clear();
+          renderStats();
+        });
         $('#xls').onclick = () => exportXlsx(rows);
       } });
 }

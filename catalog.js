@@ -174,14 +174,32 @@ const MANGUE = {
   id: 'mangue', name: 'Mangue', icon: '🥭', position: 2, active: true,
   config: {
     varieties: ['Kent', 'Keitt', 'Tommy Atkins', 'Palmer', 'Haden', 'Osteen', 'Ataulfo', 'Kasturi', 'Aya', 'Shelly', 'Noa', 'David', 'Maya'],
-    calibres: ['A (200–350 g)', 'B (351–550 g)', 'C (551–800 g)', 'D (> 800 g)', '6', '7', '8', '9', '10', '12', '14'],
+    calibres: ['A (200–350 g)', 'B (351–550 g)', 'C (551–800 g)', 'D (> 800 g)',
+               '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '18', '20'],
     categories: ['Extra', 'I', 'II'],
     tolerance: 10,
     /* Mangue : même protocole, sur 3 fruits. */
     pressure: { fruits: 3, sides: 2, ref: 13, unit: 'kg' },
-    /* Repères CEE-ONU FFV-45, en grammes. */
+    /* Repères CEE-ONU FFV-45, en grammes (calibres en lettres). */
     calibreWeights: { 'A (200–350 g)': 200, 'B (351–550 g)': 351,
                       'C (551–800 g)': 551, 'D (> 800 g)': 800 },
+    /* « Cal selon pack / ± poids » — la feuille du quai Mehadrin. Le
+       calibre de la mangue dépend du colis : chaque ligne est une
+       tranche de poids par fruit, et donne le calibre correspondant
+       pour chaque colis (3, 6 et 4 kg, dans l'ordre de la feuille). */
+    sizeTable: {
+      boxes: ['3', '6', '4'],
+      rows: [
+        { min: 250, max: 315, cal: { '3': '10', '6': '20', '4': '14' } },
+        { min: 300, max: 370, cal: { '3': '9',  '6': '18', '4': '12' } },
+        { min: 360, max: 425, cal: { '6': '15', '4': '10' } },
+        { min: 400, max: 475, cal: { '6': '13', '4': '9' } },
+        { min: 450, max: 525, cal: { '6': '12', '4': '8' } },
+        { min: 500, max: 625, cal: { '6': '11', '4': '7' } },
+        { min: 600, max: 725, cal: { '6': '10', '4': '6' } },
+        { min: 700, max: 875, cal: { '6': '9',  '4': '5' } }
+      ]
+    },
     sections: [
       PALETTISATION,
       EMBALLAGE,

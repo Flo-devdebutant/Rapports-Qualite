@@ -26,7 +26,7 @@
    ------------------------------------------------------------------ */
 
 import { appliesTo, isHidden, fieldLive } from './report-types.js';
-import { calibreMin, weightStats } from './pressure.js';
+import { palletWeighing } from './pressure.js';
 
 const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '')
   .toLowerCase().replace(/\s+/g, ' ').trim();
@@ -163,14 +163,15 @@ export function palletDefects(pal, group, defs = defectTypes(group)) {
   return { checked, total, fpb, counts, ext, int, light, loss, lightPct: pct(light), lossPct: pct(loss), entered };
 }
 
-/* Sous-calibre : fruits pesés sous le poids minimum de leur calibre. */
-export function palletUnder(pal, group) {
-  const min = calibreMin(group, pal?.cal);
-  const st = weightStats(pal, min);
-  if (!st) return { min, weighed: 0, under: 0, weights: [], pct: null };
-  const weights = (pal.w || []).filter(v => v !== '' && v != null).map(Number)
-    .filter(v => isFinite(v) && min != null && v < min);
-  return { min, weighed: st.n, under: st.under, weights, pct: min == null ? null : (st.under / st.n) * 100 };
+/* Sous-calibre : fruits pesés sous le poids minimum de leur calibre.
+   Les `fruits` fruits de la pression sont tous pesés, seuls les trop
+   légers sont notés (voir palletWeighing) : `weighed` vaut 5 dès que
+   la palette est mesurée, et 0 si son calibre n'a pas de minimum. */
+export function palletUnder(pal, group, fruits) {
+  const s = palletWeighing(pal, group, fruits);
+  const judged = s.min != null && s.weighed > 0;
+  return { min: s.min, max: s.max, weighed: judged ? s.weighed : 0, under: judged ? s.under : 0,
+           weights: judged ? s.lows : [], pct: judged ? s.pct : null };
 }
 
 /* ------------------------------- lot -------------------------------
@@ -179,7 +180,8 @@ export function palletUnder(pal, group) {
 export function receptionStats(pressures, group, type = 'reception') {
   const defs = type === 'reception' ? defectTypes(group) : [];
   const pallets = pressures?.pallets || [];
-  const rows = pallets.map(p => ({ n: String(p.n ?? ''), p, def: palletDefects(p, group, defs), und: palletUnder(p, group) }));
+  const fruits = pressures?.fruits;
+  const rows = pallets.map(p => ({ n: String(p.n ?? ''), p, def: palletDefects(p, group, defs), und: palletUnder(p, group, fruits) }));
   const sampled = rows.filter(r => r.def.checked > 0);
 
   /* Chaque palette pèse son nombre total de fruits, quand on le
@@ -194,6 +196,10 @@ export function receptionStats(pressures, group, type = 'reception') {
   const sumKind = (k) => (W ? defs.filter(t => (t.kind === 'loss') === (k === 'loss'))
     .reduce((s, t) => s + (perType[t.key] || 0), 0) : null);
 
+  /* Sous-calibre du lot : TOUTES les palettes mesurées, y compris
+     celles où rien n'a été noté (leurs fruits sont conformes). Même
+     pondération que les défauts : 20 % sur une palette parmi vingt
+     palettes semblables, c'est 1 % du lot. */
   const weighed = rows.filter(r => r.und.weighed > 0 && r.und.min != null);
   const byTotalU = weighed.length && weighed.every(r => r.def.total > 0);
   const wU = (r) => (byTotalU ? r.def.total : r.und.weighed);

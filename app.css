@@ -530,6 +530,10 @@ details.sec.off > summary{opacity:.55}
 .pc-table th,.pc-table td{border:1px solid var(--line-2);padding:5px 7px;text-align:right;white-space:nowrap}
 .pc-table thead th{background:var(--line-2);font-size:11px;color:var(--ink-2);font-weight:650}
 .pc-table tbody th{text-align:left;font-weight:650}
+.pc-table .pc-rank{color:var(--ink-3);text-align:right;font-variant-numeric:tabular-nums}
+.pc-table thead th.pc-name{text-align:left}
+.pc-table tr.bad .pc-rank{box-shadow:inset 3px 0 0 var(--fail)}
+.pc-table tr.bad .pc-rank ~ th{box-shadow:none}
 .pc-table tr.bad th,.pc-table tr.bad td{background:rgba(220,38,38,.08)}
 .pc-table tr.bad th{color:var(--fail);box-shadow:inset 3px 0 0 var(--fail)}
 .pc-table .pc-avg{font-weight:700;background:var(--line-2)}
@@ -603,6 +607,9 @@ details.sec.off > summary{opacity:.55}
 
 .pal.rec .pal-top .nm{flex:1 1 90px;min-width:0}
 .pal.rec .pal-top .nm input{font-variant-numeric:tabular-nums;font-weight:650}
+/* N° de palette à 18 chiffres (SSCC) : il s'affiche en entier, le calibre
+   passe à la ligne. */
+.pal.rec .pal-top .nm.long{flex:1 1 205px}
 .flag-btn{flex:0 0 auto;width:36px;height:36px;border-radius:9px;border:1px solid var(--line);
   background:var(--card);color:var(--ink-3);display:grid;place-items:center;cursor:pointer;padding:0}
 .flag-btn svg{width:18px;height:18px}
@@ -751,3 +758,20 @@ hr.sep{border:0;border-top:1px solid var(--line);margin:16px 0}
 }
 
 @media print{ .topbar,.sticky-actions,.icon-btn{display:none!important} body{background:#fff} }
+
+/* Réglages : poids par calibre selon le colis (mangue) */
+.st-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.st-table{border-collapse:collapse;font-size:12.5px}
+.st-table th{font-size:11px;color:var(--ink-3);font-weight:650;text-align:left;padding:4px 6px;white-space:nowrap}
+.st-table td{padding:3px 4px}
+.st-table input{width:70px;padding:6px 8px;font-size:16px}
+.st-x{border:0;background:none;color:var(--ink-3);font-size:16px;line-height:1;padding:2px 6px;cursor:pointer}
+.st-x:hover{color:var(--fail)}
+.st-add{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+.st-kg{display:inline-flex;gap:6px;align-items:center}
+.st-kg input{width:72px;padding:6px 8px}
+
+/* Réglages > Photos et espace : jauge de la place prise sur Supabase */
+.gauge{height:10px;border-radius:6px;background:var(--line-2);overflow:hidden}
+.gauge span{display:block;height:100%;min-width:3px;background:var(--green-d);border-radius:6px}
+.gauge.high span{background:var(--orange-d)}

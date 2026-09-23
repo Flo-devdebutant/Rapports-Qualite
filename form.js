@@ -8,7 +8,7 @@
    ------------------------------------------------------------------ */
 
 import { state, shell, groupById, go, back } from './app.js';
-import { local, queue, sync, forgetPhotos } from './store.js';
+import { local, queue, sync, forgetPhotos, holdReport, releaseReport } from './store.js';
 import { flatFields, computeSummary, applyComputed, fieldRole, PRESSURE_ROLES,
          judgeContext, statusIn, autoFilled,
          VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
@@ -17,7 +17,7 @@ import { importJournal, recordsForLot, recentLots, lotModel, lotNumber, journalI
 import { defectTypes, palletDefects, palletUnder, receptionStats, pressureRequired, samplingCfg,
          defectLinkedKeys, fmtPct, KPI_TONE } from './reception.js';
 import { pressureConfig, palletStats, lotStats, hasPressures, fmtP,
-         weightStats, weightLotStats, calibreMin, fmtG,
+         palletWeighing, calibreMin, needsBox, sizeTableOf, fmtG,
          refSpec, partnerRef, palletSeverity, refText, outOfZone,
          SEV_COLOR, SEV_LABEL, SEV_STEPS, RANGE_TOL, LIMITS, clampP } from './pressure.js';
 import { pressureChartSVG } from './pressure-chart.js';
@@ -507,10 +507,11 @@ function wire() {
 
 /* --------------------- journal des arrivages ---------------------
    Le journal de l'ERP se dépose ici — bouton sur téléphone, glisser-
-   déposer sur ordinateur. Il est partagé : importé au bureau, il sert
-   à toute l'équipe. Ensuite, le n° de lot suffit : fournisseur,
-   voyage, camion, date d'arrivée, détail du lot et une ligne par
-   palette (n° réel, variété, colis, calibre, GGN…) se remplissent. */
+   déposer sur ordinateur. Il reste sur cet appareil (rien ne part sur
+   le serveur) et chaque import remplace le précédent. Ensuite, le n° de
+   lot suffit : fournisseur, voyage, camion, date d'arrivée, détail du
+   lot et une ligne par palette (n° réel, variété, colis, calibre,
+   GGN…) se remplissent. */
 let lotTimer = null;
 
 function journalBoxHtml() {
@@ -574,8 +575,8 @@ async function paintJournalInfo() {
   }
   const info = await journalInfo().catch(() => null);
   box.textContent = lots.length
-    ? `${lots.length} lot${lots.length > 1 ? 's' : ''} récent${lots.length > 1 ? 's' : ''} dans le journal${
-        info?.at ? ` (importé le ${new Date(info.at).toLocaleDateString('fr-FR')})` : ''}. ` +
+    ? `Journal${info?.at ? ` importé le ${new Date(info.at).toLocaleDateString('fr-FR')}` : ''} sur cet appareil : ${
+        lots.length} lot${lots.length > 1 ? 's' : ''}. ` +
       'Tapez le n° de lot : les palettes se remplissent seules.'
     : "Importez le journal des arrivages (fichier .xlsx de l'ERP), puis tapez le n° de lot : " +
       'les palettes se remplissent seules. Sur ordinateur, vous pouvez aussi glisser le fichier sur le formulaire.';
@@ -608,8 +609,9 @@ async function tryLot(raw, { force = false } = {}) {
   if (lotNumber($('#flot')?.value ?? draft.header.lot) !== lot) return;
   if (!rows.length) {
     const box = $('#jInfo');
-    if (box) box.textContent = `Lot ${lot} absent du journal${navigator.onLine ? '' : ' de cet appareil (hors ligne)'}. ` +
-      'Importez un journal plus récent, ou remplissez le rapport à la main.';
+    if (box) box.textContent = (await journalInfo().catch(() => null))
+      ? `Lot ${lot} absent du journal importé. Importez un journal plus récent, ou remplissez le rapport à la main.`
+      : "Aucun journal sur cet appareil : importez le journal des arrivages (bouton « Journal »), puis retapez le n° de lot.";
     return;
   }
   await applyLot(lotModel(rows, state.groups, draft.product_group_id));
@@ -941,7 +943,8 @@ async function paintPhotos() {
     if (rec) photoUrls.push(src);
     cell.innerHTML = `<img alt="Photo ${i + 1}" src="${src}"${
       src ? '' : ' hidden'}><button type="button" aria-label="Supprimer">×</button>`;
-    if (!src) cell.insertAdjacentHTML('afterbegin', '<span class="ph-miss">indisponible hors ligne</span>');
+    if (!src) cell.insertAdjacentHTML('afterbegin', `<span class="ph-miss">${
+      p.archived ? 'archivée (dans le PDF d\'archive)' : 'indisponible hors ligne'}</span>`);
     cell.querySelector('button').onclick = async () => {
       if (!(await confirmSheet('Supprimer la photo', 'Cette photo sera retirée du rapport.'))) return;
       /* Suppression par identité, pas par l'indice capturé au rendu :
@@ -1127,6 +1130,13 @@ async function save() {
     draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
     draft.summary = computeSummary(group, draft.measures, draft.header.pressures, draft.type);
     draft.criteria_snapshot = group?.config || null;   // fige la grille utilisée : un rapport reste lisible même si les seuils changent plus tard
+    /* La table des poids par colis de l'application (mangue) est figée
+       avec la grille quand le produit n'a pas la sienne : le sous-calibre
+       d'un rapport ne doit pas bouger si cette table change un jour. */
+    if (draft.criteria_snapshot && draft.criteria_snapshot.sizeTable === undefined) {
+      const st = sizeTableOf(group);
+      if (st) draft.criteria_snapshot = { ...draft.criteria_snapshot, sizeTable: structuredClone(st) };
+    }
     draft.inspector_name = state.profile?.full_name || '';
     draft.created_by = currentUser()?.id;
     if (!draft.report_no) draft.report_no = await nextNumber();
@@ -1157,6 +1167,17 @@ async function save() {
       throw e;
     }
     draft = row;                    // validé : il rejoint le flux de l'équipe
+
+    /* Le PDF est proposé sur la fiche, juste après : c'est le seul
+       moment où les photos existent en pleine définition. D'ici là, le
+       rapport attend dans la file (voir holdReport) ; filet de sécurité
+       si la fiche ne s'ouvrait pas. */
+    const savedId = draft.id;
+    holdReport(savedId);
+    state.pdfOffer = savedId;
+    setTimeout(() => {
+      if (state.pdfOffer === savedId) { state.pdfOffer = null; releaseReport(savedId); sync({ silent: true }); }
+    }, 8000);
 
     await queue('report', { id: draft.id });
     await local.meta('lastForm', { product_group_id: draft.product_group_id, department: draft.header.department });
@@ -1476,7 +1497,7 @@ function paintPressures() {
          poids n'a pas de tableau `w` : on le crée plutôt que de lever
          au premier chiffre tapé. */
       (p.pallets[i].w ||= [])[k] = inp.value === '' ? '' : Number(inp.value);
-      const min = calibreMin(groupById(draft.product_group_id), p.pallets[i].cal);
+      const min = calibreMin(groupById(draft.product_group_id), p.pallets[i].cal, p.pallets[i].boxKg);
       inp.classList.toggle('off', inp.value !== '' && min != null && Number(inp.value) < min);
       touch();
       refreshPalletAvg(card, p.pallets[i]);
@@ -1535,6 +1556,7 @@ function paintPressures() {
       if (main) main.textContent = palletInfoLine(pal);
       const sub = card.querySelector('.pi-sub');
       if (sub) sub.textContent = palletInfoSub(pal);
+      if (k === 'boxKg') refreshWeights(card, pal);
       refreshPalletSum(card, pal);
       refreshVerdict();
     });
@@ -1736,12 +1758,42 @@ function calibreSpread(count) {
    assez serré pour faire ressortir le fruit qui traîne. */
 const OUTLIER = 2;
 
+/* Rappel au-dessus des cases de poids : le poids attendu (la plage
+   entière quand la table la donne, pour la mangue) et la règle de
+   saisie — seuls les fruits trop légers sont notés. */
+function weightCap(pal, group, wst) {
+  const r = wst?.range;
+  if (r?.min != null) {
+    const band = r.max != null ? `${fmtG(r.min)}–${fmtG(r.max)} g` : `minimum ${fmtG(r.min)} g`;
+    return `${band} pour le calibre ${esc(pal.cal)}${r.box ? `, colis de ${esc(r.box)} kg` : ''} · case vide = fruit conforme`;
+  }
+  if (needsBox(group, pal))
+    return `le poids du calibre ${esc(pal.cal)} dépend du colis${draft.type === 'reception'
+      ? ' : indiquez le poids net du colis dans les informations de la palette' : ' : minimum inconnu'}`;
+  return '';
+}
+
+/* Le calibre ou le colis d'une palette a changé : son poids minimum
+   aussi. On repeint en place, sans redessiner la liste (la saisie en
+   cours garde le focus). */
+function refreshWeights(card, pal) {
+  const group = groupById(draft.product_group_id);
+  const p = draft.header.pressures;
+  const wst = palletWeighing(pal, group, p.fruits);
+  const cap = card.querySelector('[data-wcap]');
+  if (cap) cap.innerHTML = weightCap(pal, group, wst);
+  card.querySelectorAll('[data-w]').forEach(inp => {
+    inp.classList.toggle('off', inp.value !== '' && wst.min != null && Number(inp.value) < wst.min);
+  });
+  refreshPalletAvg(card, pal);
+}
+
 function palletHtml(pal, i, p) {
   const T = reportType(draft.type);
   const group = groupById(draft.product_group_id);
   const st = palletStats(pal);
-  const min = calibreMin(group, pal.cal);
-  const wst = weightStats(pal, min);
+  const wst = palletWeighing(pal, group, p.fruits);
+  const min = wst.min;
   const sp = spec();
   const opts = calibreOptions();
   const left = calibreRemaining(i);
@@ -1753,7 +1805,7 @@ function palletHtml(pal, i, p) {
     <div class="pal-top">
       ${isRec ? `<button type="button" class="flag-btn" data-flag aria-pressed="${bad}"
         aria-label="Palette problématique" title="Palette problématique">${icon('flag')}</button>` : ''}
-      <span class="nm"><input type="text" data-n value="${esc(String(pal.n ?? ''))}" aria-label="N° de palette"></span>
+      <span class="nm${String(pal.n ?? '').length > 10 ? ' long' : ''}"><input type="text" data-n value="${esc(String(pal.n ?? ''))}" aria-label="N° de palette"></span>
       ${T.weights ? `<span class="cal"><select data-cal aria-label="Calibre de la palette">
         <option value="">calibre</option>
         ${opts.map(c => {
@@ -1802,7 +1854,7 @@ function palletHtml(pal, i, p) {
     </div>
 
     ${T.weights ? `
-    <div class="pal-cap">Poids (g)${min != null ? ` <span class="mini">minimum ${fmtG(min)} g pour le calibre ${esc(pal.cal)}</span>` : ''}</div>
+    <div class="pal-cap">Poids (g) <span class="mini" data-wcap>${weightCap(pal, group, wst)}</span></div>
     <div class="pal-grid" style="grid-template-columns:repeat(${p.fruits},minmax(0,1fr))">
       ${Array.from({ length: p.fruits }, (_, f) => {
         const v = pal.w?.[f];
@@ -1866,7 +1918,7 @@ function defectsHtml(pal, defs, group) {
 
 function palletSumHtml(pal, group, defs = defectTypes(group)) {
   const dd = palletDefects(pal, group, defs);
-  const un = palletUnder(pal, group);
+  const un = palletUnder(pal, group, draft.header.pressures?.fruits);
   return [
     `ext. <b>${dd.ext}</b> · int. <b>${dd.int}</b>`,
     dd.checked ? `légers <b>${fmtPct(dd.lightPct)} %</b> · pertes <b class="${dd.loss ? 'lossv' : ''}">${fmtPct(dd.lossPct)} %</b>` : '',
@@ -1911,7 +1963,7 @@ function paintRecSummary() {
     </div>
     <p class="hint" style="margin:6px 0 0">Sur ${rs.checkedTotal || 0} fruits contrôlés${
       rs.fruitsTotal ? ` (${rs.fruitsTotal.toLocaleString('fr-FR')} fruits dans le lot)` : ''} ·
-      défauts externes ${rs.extCount} · internes ${rs.intCount}. Chaque palette pèse son nombre de fruits.</p>`;
+      défauts externes ${rs.extCount} · internes ${rs.intCount}.</p>`;
 }
 
 /* Résumé d'une palette : sa moyenne, l'état de cette moyenne face à la
@@ -1923,16 +1975,15 @@ function resumeHtml(st, wst, sp, p) {
     st ? `pression <b${sev ? ` style="color:var(--sev-${sev.level})"` : ''}>${fmtP(st.avg)}</b> ${esc(p.unit || 'kg')}` : '',
     sev && (sev.level !== 'ok' || sev.tol)
       ? `<span style="color:var(--sev-${sev.level});font-weight:650">${esc(sev.tol ? SEV_LABEL.tol : SEV_LABEL[sev.level])}</span>` : '',
-    wst ? `poids <b>${fmtG(wst.avg)}</b> g` : '',
-    wst && wst.under ? `<span style="color:var(--fail);font-weight:650">${wst.under} sous-calibré${wst.under > 1 ? 's' : ''}</span>` : ''
+    wst?.avg != null ? `poids <b>${fmtG(wst.avg)}</b> g` : '',
+    wst?.under ? `<span style="color:var(--fail);font-weight:650">${wst.under} sous-calibré${wst.under > 1 ? 's' : ''}</span>` : ''
   ].filter(Boolean).join(' · ') || 'non mesurée';
 }
 
 function refreshPalletAvg(card, pal) {
   const p = draft.header.pressures;
-  const min = calibreMin(groupById(draft.product_group_id), pal.cal);
   card.querySelector('.avg').innerHTML =
-    resumeHtml(palletStats(pal), weightStats(pal, min), spec(), p);
+    resumeHtml(palletStats(pal), palletWeighing(pal, groupById(draft.product_group_id), p.fruits), spec(), p);
 }
 
 /* Après un changement de référence : les mesures ne bougent pas, mais

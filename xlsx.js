@@ -23,19 +23,26 @@ function crc32(bytes) {
   return (c ^ 0xFFFFFFFF) >>> 0;
 }
 
-function zip(files) {
+/* Les morceaux d'une archive zip « stored ». Les noms sont en UTF-8
+   (bit 11) : « Rapport Qualité » garde son accent à la décompression.
+   Date et heure réelles, au format DOS. */
+function zipParts(files) {
   const chunks = [], central = [];
   let offset = 0;
   const u16 = (n) => [n & 0xFF, (n >>> 8) & 0xFF];
   const u32 = (n) => [n & 0xFF, (n >>> 8) & 0xFF, (n >>> 16) & 0xFF, (n >>> 24) & 0xFF];
+  const d = new Date();
+  const dosTime = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const dosDate = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const FLAGS = 0x0800;
 
   for (const { name, data } of files) {
     const nameB = enc.encode(name);
     const crc = crc32(data);
-    const local = [...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+    const local = [...u32(0x04034b50), ...u16(20), ...u16(FLAGS), ...u16(0), ...u16(dosTime), ...u16(dosDate),
       ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(nameB.length), ...u16(0)];
     chunks.push(new Uint8Array(local), nameB, data);
-    central.push([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+    central.push([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(FLAGS), ...u16(0), ...u16(dosTime), ...u16(dosDate),
       ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(nameB.length),
       ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset), ...Array.from(nameB)]);
     offset += local.length + nameB.length + data.length;
@@ -45,12 +52,23 @@ function zip(files) {
   const end = [...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length),
     ...u32(cd.length), ...u32(offset), ...u16(0)];
   chunks.push(new Uint8Array(cd), new Uint8Array(end));
+  return chunks;
+}
 
+function zip(files) {
+  const chunks = zipParts(files);
   const total = chunks.reduce((s, c) => s + c.length, 0);
   const out = new Uint8Array(total);
   let o = 0;
   for (const c of chunks) { out.set(c, o); o += c.length; }
   return out;
+}
+
+/* Archive de fichiers déjà compressés (PDF, JPEG) : un Blob fait des
+   morceaux, sans les recopier dans un seul grand tableau — une archive
+   de plusieurs dizaines de Mo tient ainsi sur un téléphone. */
+export function zipBlob(files) {
+  return new Blob(zipParts(files), { type: 'application/zip' });
 }
 
 const xesc = (s) => String(s ?? '').replace(/[&<>"']/g, c =>
