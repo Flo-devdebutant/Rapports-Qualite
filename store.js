@@ -9,7 +9,8 @@
 import { db, storage, currentUser } from './supa.js';
 
 const DB_NAME = 'mehadrin-qc';
-const DB_VER = 1;
+/* v2 : journal des arrivages (palettes reçues, cherchées par n° de lot). */
+const DB_VER = 2;
 let idb = null;
 
 export function openDB() {
@@ -24,8 +25,19 @@ export function openDB() {
       if (!d.objectStoreNames.contains('outbox'))   d.createObjectStore('outbox',   { keyPath: 'id' });
       if (!d.objectStoreNames.contains('photos'))   d.createObjectStore('photos',   { keyPath: 'id' });
       if (!d.objectStoreNames.contains('meta'))     d.createObjectStore('meta',     { keyPath: 'key' });
+      if (!d.objectStoreNames.contains('arrivals')) {
+        const st = d.createObjectStore('arrivals', { keyPath: 'id' });
+        st.createIndex('lot', 'lot');
+      }
     };
-    req.onsuccess = () => { idb = req.result; resolve(idb); };
+    req.onsuccess = () => {
+      idb = req.result;
+      /* Une version plus récente de l'application s'ouvre dans un autre
+         onglet : on lui cède la base plutôt que de bloquer sa mise à
+         jour. */
+      idb.onversionchange = () => { idb.close(); idb = null; };
+      resolve(idb);
+    };
     req.onerror = () => reject(req.error);
   });
 }
@@ -41,6 +53,32 @@ export const local = {
   async put(store, val)   { return wrap((await tx(store, 'readwrite')).put(val)); },
   async del(store, id)    { return wrap((await tx(store, 'readwrite')).delete(id)); },
   async clear(store)      { return wrap((await tx(store, 'readwrite')).clear()); },
+  /* Mille palettes d'un journal en UNE transaction : une écriture par
+     ligne prenait plusieurs secondes sur un téléphone. */
+  async putMany(store, vals) {
+    const d = await openDB();
+    return new Promise((res, rej) => {
+      const t = d.transaction(store, 'readwrite');
+      const os = t.objectStore(store);
+      for (const v of vals) os.put(v);
+      t.oncomplete = () => res(vals.length);
+      t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error);
+    });
+  },
+  async byIndex(store, index, value) {
+    return wrap((await tx(store)).index(index).getAll(value));
+  },
+  async delMany(store, ids) {
+    const d = await openDB();
+    return new Promise((res, rej) => {
+      const t = d.transaction(store, 'readwrite');
+      const os = t.objectStore(store);
+      for (const id of ids) os.delete(id);
+      t.oncomplete = () => res(ids.length);
+      t.onerror = () => rej(t.error);
+    });
+  },
   async meta(key, val) {
     if (val === undefined) return (await wrap((await tx('meta')).get(key)))?.value;
     return wrap((await tx('meta', 'readwrite')).put({ key, value: val }));
@@ -112,6 +150,10 @@ async function push() {
         await db('partners').eq('id', item.payload.id).remove();
       } else if (item.kind === 'deleteReport') {
         await db('reports').eq('id', item.payload.id).update({ deleted: true });
+      } else if (item.kind === 'arrivals') {
+        /* Seules les colonnes du journal partent : le numéro de
+           séquence et les dates sont posés par la base. */
+        await db('arrivals').upsert(item.payload.rows.map(({ id, lot, sscc, day, data }) => ({ id, lot, sscc, day, data })));
       }
       await local.del('outbox', item.id);
     } catch (e) {
@@ -224,6 +266,36 @@ async function pull() {
   if (groups.length) {
     await local.clear('groups');
     for (const g of groups) await local.put('groups', g);
+  }
+
+  /* Le journal des arrivages ne doit jamais bloquer la synchronisation
+     des rapports : une erreur ici est notée et on continue. */
+  try { await pullArrivals(); } catch (e) { console.warn('[arrivages]', e.message); }
+}
+
+/* Palettes reçues ces 30 derniers jours, par petits paquets : chaque
+   téléphone retrouve un lot importé au bureau, même hors réseau au
+   moment de taper son numéro. Plus ancien, le lot se cherche en ligne
+   à la demande. */
+async function pullArrivals() {
+  const since = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  let cursor = Number(await local.meta('arrivalsSeq')) || 0;
+  for (let page = 0; page < 6; page++) {
+    const rows = await db('arrivals').select('id,lot,sscc,day,data,seq')
+      .gt('seq', cursor).gte('day', since).order('seq', true).limit(1000);
+    if (!rows?.length) break;
+    await local.putMany('arrivals', rows);
+    cursor = rows.reduce((m, r) => Math.max(m, Number(r.seq) || 0), cursor);
+    await local.meta('arrivalsSeq', cursor);
+    if (rows.length < 1000) break;
+  }
+  /* Ménage une fois par jour : trois mois de palettes suffisent. */
+  const today = new Date().toISOString().slice(0, 10);
+  if ((await local.meta('arrivalsPurge')) !== today) {
+    const limit = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const old = (await local.all('arrivals')).filter(r => r.day && r.day < limit).map(r => r.id);
+    if (old.length) await local.delMany('arrivals', old);
+    await local.meta('arrivalsPurge', today);
   }
 }
 

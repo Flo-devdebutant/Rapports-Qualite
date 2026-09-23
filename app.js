@@ -449,7 +449,11 @@ export async function logout() {
   try {
     await local.meta('profile', null);
     await local.meta('lastSync', null);
-    for (const s of ['reports', 'partners', 'groups', 'outbox', 'photos']) {
+    /* Les curseurs de synchronisation partent avec les données : le
+       collègue suivant ne recevait sinon que les rapports modifiés
+       après la dernière synchronisation du précédent. */
+    for (const k of ['serverCursor', 'arrivalsSeq', 'arrivalsPurge', 'journalInfo']) await local.meta(k, null);
+    for (const s of ['reports', 'partners', 'groups', 'outbox', 'photos', 'arrivals']) {
       try { await local.clear(s); } catch (e) {}
     }
   } catch (e) { console.warn('logout', e); }

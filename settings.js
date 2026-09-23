@@ -7,6 +7,7 @@ import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
 import { fieldStatus, FIELD_ROLES, fieldRole, effSeverity, flatFields,
          verdictCfg, ripenessBands, ripenessField, bandsFromLabels } from './verdict.js';
 import { allDrafts } from './form.js';
+import { defectTypes, samplingCfg, pressureRequired, resolveLink, DEFECT_KINDS, DEFECT_WHERE } from './reception.js';
 import { LANGS, builtinTranslation } from './report-pdf.js';
 import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS, LIMITS, clampP } from './pressure.js';
 import { PACKAGING_KINDS, TYPE_LIST, TYPE_IDS, reportType, appliesTo, typesLabel,
@@ -304,6 +305,31 @@ export function renderGroupEditor(id, fresh = false) {
       <div class="wgrid">${weightsHtml(cfg)}</div>
     </div>
 
+    <!-- Réception : pressions obligatoires, échantillon et défauts
+         comptés palette par palette. -->
+    <div class="card pad" style="margin-top:12px">
+      <h3 style="font-size:14.5px;margin-bottom:4px">Réception : contrôle par palette</h3>
+      <p class="muted" style="margin:0 0 12px">Chaque palette du lot se contrôle : pressions, pesée
+        des fruits de pression, et défauts comptés sur les colis ouverts.</p>
+      <label class="opt-row" style="margin:0 0 12px">
+        <input type="checkbox" id="prReq" ${pressureRequired(g, 'reception') ? 'checked' : ''}>
+        <span>Pressions obligatoires en réception<small>Le rapport ne s'enregistre pas tant que
+          chaque palette du lot n'a pas tous ses relevés. « Tout à ${pr.ref} » reste disponible.</small></span></label>
+      <div class="row2">
+        <div class="field"><label for="smpB">Colis ouverts par palette</label>
+          <input type="number" id="smpB" min="1" step="1" value="${samplingCfg(g).boxes}"></div>
+        <div class="field"><label for="smpK">Le calibre compte les fruits d'un colis de (kg)</label>
+          <input type="number" id="smpK" min="0" step="0.5" value="${samplingCfg(g).perKg ?? ''}"
+            placeholder="son poids réel"></div>
+      </div>
+      <div class="hint" id="smpHint">${samplingHint(g)}</div>
+      <h4 style="font-size:13px;margin:16px 0 4px">Défauts comptés par palette</h4>
+      <p class="hint" style="margin:0 0 8px">Léger ou perte, externe ou interne. Un défaut relié à un
+        critère de la grille le remplit tout seul (% du lot).</p>
+      <div id="defRows"></div>
+      <button type="button" class="btn ghost sm" id="defAdd" style="margin-top:6px">${icon('plus')} Défaut</button>
+    </div>
+
     <!-- Les trois indices du rapport reposaient sur des seuils écrits
          dans le code. « Mauvaise à partir de 3 défauts » n'est pas une
          vérité universelle : c'est une décision de l'entreprise, qui
@@ -395,9 +421,12 @@ export function renderGroupEditor(id, fresh = false) {
            frappe : le redessin repart de valeurs à jour, et « Enregistrer »
            n'a plus qu'à persister. */
         readHeader();
-        ['#nm', '#ic', '#tol', '#vars', '#pf', '#ps', '#prf'].forEach(s => {
-          const i = $(s); if (i) i.oninput = readHeader;
+        ['#nm', '#ic', '#tol', '#vars', '#pf', '#ps', '#prf', '#smpB', '#smpK'].forEach(s => {
+          const i = $(s); if (i) i.oninput = () => { readHeader(); const h = $('#smpHint'); if (h) h.textContent = samplingHint(g); };
         });
+        const reqEl = $('#prReq');
+        if (reqEl) reqEl.onchange = readHeader;
+        paintDefects(g);
         $$('[data-cal]').forEach(i => i.oninput = readHeader);
         /* Les calibres commandent la liste des poids minimums : on
            redessine cette liste quand ils changent, en conservant les
@@ -419,12 +448,23 @@ export function renderGroupEditor(id, fresh = false) {
           const newCals = splitList(v('#cals'));
           g.config.calibres = newCals;
           g.config.calibreWeights = remapWeights(g.config.calibreWeights || {}, oldCals, newCals);
+          /* On repart du réglage existant : une clé posée ailleurs
+             (pressions obligatoires…) ne doit pas disparaître parce
+             qu'on a retouché le nombre de fruits. */
+          const req = $('#prReq');
           g.config.pressure = {
+            ...(g.config.pressure || {}),
             fruits: Math.max(1, num(v('#pf')) ?? pr.fruits),
             sides:  Math.max(1, num(v('#ps')) ?? pr.sides),
             ref:    clampP(v('#prf')) ?? pr.ref,
-            unit:   pr.unit
+            unit:   pr.unit,
+            ...(req ? { requiredFor: req.checked ? ['reception'] : [] } : {})
           };
+          if ($('#smpB')) {
+            const kg = num(v('#smpK'));
+            g.config.sampling = { boxes: Math.max(1, num(v('#smpB')) ?? samplingCfg(g).boxes),
+                                  perKg: kg > 0 ? kg : null };
+          }
         }
 
         /* Les poids sont indexés par libellé de calibre. Renommer « 18 »
@@ -598,6 +638,73 @@ export function renderGroupEditor(id, fresh = false) {
           go('#/settings/groups');
         };
       } });
+}
+
+/* « calibre 16 : 16 fruits par colis de 4 kg, 160 contrôlés » — la
+   règle, dite avec un exemple, pour qu'on la vérifie d'un coup d'œil. */
+function samplingHint(g) {
+  const { boxes, perKg } = samplingCfg(g);
+  const f = (n) => String(Math.round(n * 10) / 10).replace('.', ',');
+  if (!perKg) return `Exemple : calibre 12 → 12 fruits par colis, ${boxes * 12} fruits contrôlés par palette.`;
+  return `Exemple : calibre 16 en colis de ${f(perKg)} kg → 16 fruits par colis, ${boxes * 16} contrôlés ; ` +
+         `en colis de 10 kg → ${f(16 * 10 / perKg)} par colis, ${f(boxes * 16 * 10 / perKg)} contrôlés.`;
+}
+
+/* Liste des défauts comptés. Dès qu'on la touche, elle s'enregistre
+   en clair dans le produit, liens compris — la liste livrée devient
+   la sienne. */
+function paintDefects(g) {
+  const box = $('#defRows');
+  if (!box) return;
+  const own = () => {
+    if (!Array.isArray(g.config.defects))
+      g.config.defects = defectTypes(g).map(d => ({ key: d.key, label: d.label, kind: d.kind, where: d.where,
+                                                   link: resolveLink(d, g, 'reception') || '' }));
+    return g.config.defects;
+  };
+  /* La liste brute, lignes encore sans nom comprises : un défaut
+     qu'on vient d'ajouter doit apparaître pour qu'on puisse le nommer. */
+  const defs = Array.isArray(g.config.defects) ? g.config.defects : defectTypes(g);
+  const pct = flatFields(g, 'reception').filter(f => f.type === 'pct');
+  box.innerHTML = defs.map((d, i) => {
+    const link = resolveLink(d, g, 'reception') || '';
+    return `<div class="def-row" data-di="${i}">
+      <input type="text" data-df="label" value="${esc(d.label)}" aria-label="Nom du défaut">
+      <select data-df="kind">${Object.entries(DEFECT_KINDS).map(([k, w]) =>
+        `<option value="${k}"${k === d.kind ? ' selected' : ''}>${w}</option>`).join('')}</select>
+      <select data-df="where">${Object.entries(DEFECT_WHERE).map(([k, w]) =>
+        `<option value="${k}"${k === d.where ? ' selected' : ''}>${w}</option>`).join('')}</select>
+      <select data-df="link" aria-label="Critère rempli"><option value="">Ne remplit aucun critère</option>${pct.map(f =>
+        `<option value="${esc(f.key)}"${f.key === link ? ' selected' : ''}>Remplit : ${esc(f.label)}</option>`).join('')}</select>
+      <span class="ord">
+        <button type="button" class="ordb" data-dm="-1" aria-label="Monter"${i === 0 ? ' disabled' : ''}>▲</button>
+        <button type="button" class="ordb" data-dm="1" aria-label="Descendre"${i === defs.length - 1 ? ' disabled' : ''}>▼</button>
+      </span>
+      <button type="button" class="icon-btn" data-dx aria-label="Retirer">${icon('x')}</button>
+    </div>`;
+  }).join('') || '<p class="muted" style="margin:0">Aucun défaut compté par palette pour ce produit.</p>';
+
+  box.querySelectorAll('.def-row').forEach(row => {
+    const i = +row.dataset.di;
+    row.querySelectorAll('[data-df]').forEach(el => {
+      const k = el.dataset.df;
+      const on = () => { own()[i][k] = el.value; };
+      if (el.tagName === 'SELECT') el.onchange = on; else el.oninput = on;
+    });
+    row.querySelectorAll('[data-dm]').forEach(b => b.onclick = () => {
+      const list = own(), j = i + Number(b.dataset.dm);
+      if (j < 0 || j >= list.length) return;
+      [list[i], list[j]] = [list[j], list[i]];
+      paintDefects(g);
+    });
+    row.querySelector('[data-dx]').onclick = () => { own().splice(i, 1); paintDefects(g); };
+  });
+  const add = $('#defAdd');
+  if (add) add.onclick = () => {
+    own().push({ key: 'def_' + Math.random().toString(36).slice(2, 7), label: '', kind: 'light', where: 'ext', link: '' });
+    paintDefects(g);
+    box.querySelector('.def-row:last-child input')?.focus();
+  };
 }
 
 /* ==================== BARÈME DES TROIS INDICES ====================

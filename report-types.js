@@ -18,7 +18,10 @@ export const REPORT_TYPES = {
     refPlaceholder: 'Lot fournisseur',
     voyage: true,           // le n° de voyage n'existe qu'à l'arrivée
     packaging: false,
-    weights: false,
+    /* Les fruits de pression sont aussi pesés à l'arrivée : c'est ce
+       qui donne le sous-calibre palette par palette. */
+    weights: true,
+    journal: true,          // n° de lot → palettes du journal des arrivages
     groups: null,           // tous les groupes de produit
     icon: 'down',
     tone: ''

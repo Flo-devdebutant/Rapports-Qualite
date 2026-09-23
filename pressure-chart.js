@@ -107,7 +107,7 @@ function keyMark(level) {
    existe toujours — elle sert aussi au daltonisme et à l'impression.
    La colonne État nomme la gravité en toutes lettres : c'est elle qui
    empêche la couleur d'être seule porteuse de sens. */
-export function pressureTable(pressures, cfg, spec) {
+export function pressureTable(pressures, cfg, spec, bad = new Set()) {
   const rows = pressures?.pallets || [];
   if (!rows.length) return '';
   const head = [];
@@ -120,7 +120,7 @@ export function pressureTable(pressures, cfg, spec) {
       const v = (r.v || []);
       const st = palletStats(r);
       const sev = st ? palletSeverity(st.avg, spec) : null;
-      return `<tr><th>${esc(String(r.n ?? ''))}</th>${
+      return `<tr${bad.has(String(r.n ?? '').trim()) ? ' class="bad"' : ''}><th>${esc(String(r.n ?? ''))}</th>${
         head.map((_, i) => `<td>${v[i] === '' || v[i] == null ? '' : fmtP(Number(v[i])).replace('.0', '')}</td>`).join('')
       }<td class="pc-avg"${sev ? ` style="color:var(--sev-${sev.level})"` : ''}>${st ? fmtP(st.avg) : ''}</td>${
         spec ? `<td class="pc-state">${sev
@@ -131,7 +131,7 @@ export function pressureTable(pressures, cfg, spec) {
 
 /* Tableau des poids : le fruit sous le minimum de son calibre ressort
    en rouge — c'est la seule chose que ce tableau doit faire voir. */
-export function weightTable(pressures, cfg, group) {
+export function weightTable(pressures, cfg, group, bad = new Set()) {
   const rows = (pressures?.pallets || []).filter(r => (r.w || []).some(v => v !== '' && v != null));
   if (!rows.length) return '';
   const head = Array.from({ length: cfg.fruits }, (_, f) => `F${f + 1}`);
@@ -140,7 +140,7 @@ export function weightTable(pressures, cfg, group) {
     <tbody>${rows.map(r => {
       const min = calibreMin(group, r.cal);
       const st = weightStats(r, min);
-      return `<tr><th>${esc(String(r.n ?? ''))}</th><td>${esc(r.cal || '—')}</td>${
+      return `<tr${bad.has(String(r.n ?? '').trim()) ? ' class="bad"' : ''}><th>${esc(String(r.n ?? ''))}</th><td>${esc(r.cal || '—')}</td>${
         head.map((_, i) => {
           const v = r.w?.[i];
           if (v === '' || v == null) return '<td></td>';

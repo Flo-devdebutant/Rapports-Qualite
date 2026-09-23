@@ -31,6 +31,9 @@ function winAnsi(str) {
     const c = ch.codePointAt(0);
     if (c < 0x100) out.push(c);
     else if (WIN_HIGH[c]) out.push(WIN_HIGH[c]);
+    /* Espaces fines et insécables de toLocaleString (« 1 280 ») : hors
+       WinAnsi, elles sortaient en « ? ». */
+    else if (c === 0x202F || c === 0x2009 || c === 0x2007) out.push(0xA0);
     else out.push(0x3F); // ?
   }
   return out;
@@ -134,6 +137,16 @@ export class PDF {
     if (align === 'right')  tx = x - textWidth(s, size, bold);
     this.ops.push(
       `BT /${bold ? 'F2' : 'F1'} ${size} Tf ${color.join(' ')} rg 1 0 0 1 ${f(tx)} ${f(A4.h - y)} Tm (${esc(winAnsi(s))}) Tj ET`
+    );
+    return this;
+  }
+
+  /* Texte vertical, de bas en haut : les en-têtes d'un tableau dense
+     (huit défauts côte à côte) tiennent ainsi sans abréviation. */
+  vtext(str, x, y, { size = 7.4, bold = false, color = BLACK } = {}) {
+    const s = String(str ?? '');
+    this.ops.push(
+      `BT /${bold ? 'F2' : 'F1'} ${size} Tf ${color.join(' ')} rg 0 1 -1 0 ${f(x)} ${f(A4.h - y)} Tm (${esc(winAnsi(s))}) Tj ET`
     );
     return this;
   }
@@ -250,18 +263,25 @@ export class PDF {
     return this;
   }
 
-  table(cols, rows) {
+  /* Options : `size` (corps des cellules), `headSize` (en-têtes).
+     Une colonne marquée `rot` a son en-tête écrit verticalement.
+     Une ligne portant `_bg` est surlignée — les palettes
+     problématiques, par exemple. */
+  table(cols, rows, { size = 8.4, headSize = 8.2 } = {}) {
     const total = cols.reduce((s, c) => s + c.w, 0);
     const scale = (A4.w - 2 * M) / total;
     const W = cols.map(c => c.w * scale);
+    const lh = size + 1.6, hlh = headSize + 1.8;
 
     const head = () => {
-      this.need(30);
+      const hLines = cols.map((c, i) => c.rot ? [] : wrapText(c.h, headSize, true, W[i] - 6));
+      const rotH = Math.max(0, ...cols.map(c => c.rot ? textWidth(c.h, headSize, true) + 4 : 0));
+      const hh = Math.max(Math.max(...hLines.map(l => l.length)) * hlh, rotH);
+      this.need(Math.max(30, hh + 20));
       let x = M;
-      const hLines = cols.map((c, i) => wrapText(c.h, 8.2, true, W[i] - 6));
-      const hh = Math.max(...hLines.map(l => l.length)) * 10;
-      hLines.forEach((lines, i) => {
-        lines.forEach((ln, k) => this.text(ln, x + 1, this.y + 8 + k * 10, { size: 8.2, bold: true }));
+      cols.forEach((c, i) => {
+        if (c.rot) this.vtext(c.h, x + 1 + headSize * 0.75, this.y + hh + 1, { size: headSize, bold: true });
+        else hLines[i].forEach((ln, k) => this.text(ln, x + 1, this.y + headSize + k * hlh, { size: headSize, bold: true }));
         x += W[i];
       });
       this.y += hh + 4;
@@ -274,10 +294,11 @@ export class PDF {
       const cells = cols.map((c, i) => {
         const v = r[c.k];
         const val = (v && typeof v === 'object') ? v.v : v;
-        return wrapText(val ?? '', 8.4, false, W[i] - ((v && v.s) ? 18 : 6));
+        return wrapText(val ?? '', size, false, W[i] - ((v && v.s) ? 18 : 6));
       });
-      const rh = Math.max(...cells.map(l => l.length)) * 10 + 3;
+      const rh = Math.max(...cells.map(l => l.length)) * lh + 3;
       if (this.y + rh > A4.h - M - 18) { this.newPage(); head(); }
+      if (r._bg) this.rect(M, this.y - 2, A4.w - 2 * M, rh, { fill: r._bg });
       let x = M;
       cols.forEach((c, i) => {
         const v = r[c.k];
@@ -286,7 +307,7 @@ export class PDF {
         if (st) { this.badge(x + 1, this.y + 1, st, 8); tx = x + 13; }
         const col = (v && typeof v === 'object' && v.color) ? v.color : BLACK;
         const bold = !!(v && typeof v === 'object' && v.bold);
-        cells[i].forEach((ln, k) => this.text(ln, tx, this.y + 8 + k * 10, { size: 8.4, color: col, bold }));
+        cells[i].forEach((ln, k) => this.text(ln, tx, this.y + size - 0.4 + k * lh, { size, color: col, bold }));
         x += W[i];
       });
       this.y += rh;

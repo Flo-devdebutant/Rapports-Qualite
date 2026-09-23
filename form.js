@@ -13,6 +13,9 @@ import { flatFields, computeSummary, applyComputed, fieldRole, PRESSURE_ROLES,
          judgeContext, statusIn, autoFilled,
          VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { COUNTRIES_FR, countryName } from './countries.js';
+import { importJournal, recordsForLot, recentLots, lotModel, lotNumber, journalInfo } from './journal.js';
+import { defectTypes, palletDefects, palletUnder, receptionStats, pressureRequired, samplingCfg,
+         defectLinkedKeys, fmtPct, KPI_TONE } from './reception.js';
 import { pressureConfig, palletStats, lotStats, hasPressures, fmtP,
          weightStats, weightLotStats, calibreMin, fmtG,
          refSpec, partnerRef, palletSeverity, refText, outOfZone,
@@ -101,6 +104,9 @@ function paint() {
   const T = reportType(draft.type);
   const isRec = draft.type === 'reception';
   const choices = groupChoices(T);
+  /* Avocat et mangue, à la réception : le contrôle par palette n'est
+     plus facultatif. */
+  const req = pressureRequired(group, draft.type);
   draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
   draft.summary = computeSummary(group, draft.measures, draft.header.pressures, draft.type);
   const s = draft.summary;
@@ -121,6 +127,7 @@ function paint() {
     <details class="sec" open>
       <summary>Général ${caret()}</summary>
       <div class="body grid2">
+        ${T.journal ? journalBoxHtml() : ''}
         <div class="field"><label for="fdate">Date et heure du contrôle</label>
           <input type="datetime-local" id="fdate" value="${toLocalInput(draft.report_date)}"></div>
 
@@ -174,12 +181,23 @@ function paint() {
             <input type="text" id="fload" value="${esc(draft.header.voyage || draft.header.load_id || '')}"></div>` : ''}
         </div>
 
+        ${isRec ? `
+        <!-- La date du quai et le camion : repris du journal, ils
+             figurent en tête du rapport envoyé au fournisseur. -->
+        <div class="row2">
+          <div class="field"><label for="farr">Date de réception</label>
+            <input type="datetime-local" id="farr" value="${esc((draft.header.arrival || '').slice(0, 16))}"></div>
+          <div class="field"><label for="ftruck">N° de camion</label>
+            <input type="text" id="ftruck" value="${esc(draft.header.truck || '')}"></div>
+        </div>` : ''}
+
         <div class="row2">
           <!-- À la réception on trace le lot fournisseur ; en expédition
-               comme en production, c'est le bon de livraison. -->
-          <div class="field"><label for="flot">${T.refLabel}</label>
+               comme en production, c'est le bon de livraison. Le lot de
+               réception, lui, est en tête : c'est lui qui remplit tout. -->
+          ${T.journal ? '' : `<div class="field"><label for="flot">${T.refLabel}</label>
             <input type="text" id="flot" value="${esc(draft.header[T.refKey] || '')}"
-                   placeholder="${esc(T.refPlaceholder)}"></div>
+                   placeholder="${esc(T.refPlaceholder)}"></div>`}
           <div class="field"><label for="fcat">Catégorie</label>
             <select id="fcat"><option value="">—</option>
               ${(group?.config?.categories || ['Extra','I','II']).map(c =>
@@ -216,8 +234,8 @@ function paint() {
          Le lot arrive le plus souvent homogène à la pression de
          référence ; le bouton de remplissage traite ce cas en un geste
          et la saisie manuelle sert aux palettes qui sortent du lot. -->
-    <details class="sec" ${hasPressures(draft.header) ? 'open' : ''}>
-      <summary>${T.weights ? 'Contrôle par palette' : 'Pressions'}
+    <details class="sec" id="prSec" ${hasPressures(draft.header) || req || draft.header.pressures?.pallets?.length ? 'open' : ''}>
+      <summary>${T.weights ? 'Contrôle par palette' : 'Pressions'}${req ? ' <span class="pill sm">obligatoire</span>' : ''}
         <span class="count" id="prCount"></span> ${caret()}</summary>
       <div class="body" id="prBody"></div>
     </details>
@@ -368,7 +386,20 @@ function wire() {
   $('#fcarrier').oninput = (e) => set('carrier', e.target.value);
   const loadEl = $('#fload');
   if (loadEl) loadEl.oninput = (e) => set('voyage', e.target.value);
-  $('#flot').oninput     = (e) => set(reportType(draft.type).refKey, e.target.value);
+  $('#flot').oninput     = (e) => {
+    set(reportType(draft.type).refKey, e.target.value);
+    /* Le n° de lot suffit : les palettes du journal arrivent seules.
+       On attend la fin de la frappe — « 1688 » n'est pas « 16886 ». */
+    if (reportType(draft.type).journal) {
+      clearTimeout(lotTimer);
+      lotTimer = setTimeout(() => tryLot(e.target.value), 450);
+    }
+  };
+  if (reportType(draft.type).journal) wireJournal();
+  const arrEl = $('#farr');
+  if (arrEl) arrEl.onchange = (e) => set('arrival', e.target.value);
+  const truckEl = $('#ftruck');
+  if (truckEl) truckEl.oninput = (e) => set('truck', e.target.value);
 
   /* Palettes problématiques : saisie libre, normalisée à la sortie du
      champ, et rappel des palettes déjà contrôlées pour les désigner
@@ -376,7 +407,7 @@ function wire() {
      candidates naturelles. */
   const bad = $('#fbad');
   if (bad) {
-    bad.oninput = () => { setBad(splitPallets(bad.value)); paintBadPick(); };
+    bad.oninput = () => { setBad(splitPallets(bad.value)); paintBadPick(); paintFlags(); };
     bad.onblur  = () => { bad.value = badPallets(draft.header).join(', '); };
     paintBadPick();
   }
@@ -472,6 +503,177 @@ function wire() {
 
   $('#cancel').onclick = () => leave();
   $('#save').onclick = save;
+}
+
+/* --------------------- journal des arrivages ---------------------
+   Le journal de l'ERP se dépose ici — bouton sur téléphone, glisser-
+   déposer sur ordinateur. Il est partagé : importé au bureau, il sert
+   à toute l'équipe. Ensuite, le n° de lot suffit : fournisseur,
+   voyage, camion, date d'arrivée, détail du lot et une ligne par
+   palette (n° réel, variété, colis, calibre, GGN…) se remplissent. */
+let lotTimer = null;
+
+function journalBoxHtml() {
+  return `<div class="field span2 jr-box">
+    <label for="flot">N° de lot</label>
+    <div class="jr-row">
+      <input type="text" id="flot" list="lotList" autocomplete="off" inputmode="text"
+        value="${esc(draft.header.lot || '')}" placeholder="N° du lot, ex. 16886">
+      <button type="button" class="btn ghost sm" id="jPick">${icon('excel')} Journal</button>
+    </div>
+    <datalist id="lotList"></datalist>
+    <input type="file" id="jFile" hidden
+      accept=".xlsx,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+    <div class="hint" id="jInfo"></div>
+  </div>`;
+}
+
+function wireJournal() {
+  const pick = $('#jPick'), file = $('#jFile');
+  if (pick && file) {
+    pick.onclick = () => file.click();
+    file.onchange = () => { const f = file.files?.[0]; file.value = ''; if (f) importFile(f); };
+  }
+  const wrap = document.querySelector('.form-wrap');
+  if (wrap) {
+    wrap.addEventListener('dragover', (e) => {
+      if (![...(e.dataTransfer?.types || [])].includes('Files')) return;
+      e.preventDefault(); wrap.classList.add('dropping');
+    });
+    wrap.addEventListener('dragleave', (e) => { if (!wrap.contains(e.relatedTarget)) wrap.classList.remove('dropping'); });
+    wrap.addEventListener('drop', (e) => {
+      const f = e.dataTransfer?.files?.[0];
+      wrap.classList.remove('dropping');
+      if (!f) return;
+      e.preventDefault();
+      if (/\.(xlsx|csv)$/i.test(f.name) || /sheet|csv|excel/i.test(f.type)) importFile(f);
+      else toast('Déposez ici le journal des arrivages (.xlsx ou .csv).', 'err');
+    });
+  }
+  paintJournalInfo();
+}
+
+const fmtDay = (d) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}` : '');
+const fmtWall = (s) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}${s.length > 10 ? ' à ' + s.slice(11, 16) : ''}` : '');
+
+async function paintJournalInfo() {
+  const box = $('#jInfo');
+  if (!box) return;
+  let lots = [];
+  try { lots = await recentLots(80); } catch (e) { lots = []; }
+  const dl = $('#lotList');
+  if (dl) dl.innerHTML = lots.map(l => `<option value="${esc(l.lot)}">${
+    esc([l.supplier, `${l.n} pal.`, fmtDay(l.day)].filter(Boolean).join(' · '))}</option>`).join('');
+  const imp = draft.header.import;
+  if (imp?.lot && imp.lot === lotNumber(draft.header.lot)) {
+    box.innerHTML = `<span class="ok-note">${icon('check')} Lot ${esc(imp.lot)} : ${imp.n} palette${imp.n > 1 ? 's' : ''}
+      reprise${imp.n > 1 ? 's' : ''} du journal des arrivages.</span>
+      <button type="button" class="linkish" id="jRefill">Relire le journal</button>`;
+    $('#jRefill').onclick = () => tryLot(draft.header.lot, { force: true });
+    return;
+  }
+  const info = await journalInfo().catch(() => null);
+  box.textContent = lots.length
+    ? `${lots.length} lot${lots.length > 1 ? 's' : ''} récent${lots.length > 1 ? 's' : ''} dans le journal${
+        info?.at ? ` (importé le ${new Date(info.at).toLocaleDateString('fr-FR')})` : ''}. ` +
+      'Tapez le n° de lot : les palettes se remplissent seules.'
+    : "Importez le journal des arrivages (fichier .xlsx de l'ERP), puis tapez le n° de lot : " +
+      'les palettes se remplissent seules. Sur ordinateur, vous pouvez aussi glisser le fichier sur le formulaire.';
+}
+
+async function importFile(file) {
+  const btn = $('#jPick');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
+  try {
+    const info = await importJournal(file);
+    toast(`Journal importé : ${info.rows} palettes, ${info.lots} lots${
+      info.missing?.length ? ` — colonnes absentes : ${info.missing.join(', ')}` : ''}`, '', { ms: 5000 });
+    if (lotNumber(draft.header.lot)) await tryLot(draft.header.lot, { force: true });
+    else { await paintJournalInfo(); $('#flot')?.focus(); }
+  } catch (e) {
+    toast(e.message || 'Journal illisible', 'err', { ms: 7000 });
+  } finally {
+    const b = $('#jPick');
+    if (b) { b.disabled = false; b.innerHTML = `${icon('excel')} Journal`; }
+  }
+}
+
+async function tryLot(raw, { force = false } = {}) {
+  const lot = lotNumber(raw);
+  if (!lot || lot.length < 3) return paintJournalInfo();
+  if (!force && draft.header.import?.lot === lot) return paintJournalInfo();
+  const rows = await recordsForLot(lot);
+  /* La frappe a continué pendant la recherche : ce résultat est
+     périmé, le suivant arrive. */
+  if (lotNumber($('#flot')?.value ?? draft.header.lot) !== lot) return;
+  if (!rows.length) {
+    const box = $('#jInfo');
+    if (box) box.textContent = `Lot ${lot} absent du journal${navigator.onLine ? '' : ' de cet appareil (hors ligne)'}. ` +
+      'Importez un journal plus récent, ou remplissez le rapport à la main.';
+    return;
+  }
+  await applyLot(lotModel(rows, state.groups, draft.product_group_id));
+}
+
+const measuredPallet = (pl) =>
+  (pl.v || []).some(v => v !== '' && v != null) || (pl.w || []).some(v => v !== '' && v != null) ||
+  Object.values(pl.d || {}).some(v => v !== '' && v != null);
+
+async function applyLot(model) {
+  if (!model) return;
+  const T = reportType(draft.type);
+  const allowed = groupChoices(T).map(g => g.id);
+  const target = model.groupId && allowed.includes(model.groupId) ? model.groupId : draft.product_group_id;
+  const names = new Set(model.pallets.map(x => String(x.n)));
+  const cur = draft.header.pressures?.pallets || [];
+  /* Des mesures déjà prises sur des palettes absentes du lot : on ne
+     les écrase pas sans le demander. Celles qui portent le même n°
+     gardent leurs relevés. */
+  const orphans = cur.filter(pl => measuredPallet(pl) && !names.has(String(pl.n)));
+  const lossy = orphans.length || (target !== draft.product_group_id && cur.some(measuredPallet));
+  if (lossy && !(await confirmSheet('Remplacer les palettes',
+      `Des palettes déjà mesurées ne font pas partie du lot ${model.lot}. ` +
+      `Les remplacer par les ${model.pallets.length} palettes du journal ?`, { okLabel: 'Remplacer' }))) return;
+
+  const before = structuredClone(draft);
+  if (target !== draft.product_group_id) {
+    /* Le protocole de pression suit le produit (5 fruits pour
+       l'avocat, 3 pour la mangue) : l'ancien bloc est refait. */
+    draft.product_group_id = target;
+    delete draft.header.pressures;
+  }
+  const h = draft.header;
+  if (model.supplier) draft.partner_name = model.supplier;
+  h.lot = model.lot;
+  if (model.voyage) h.voyage = model.voyage;
+  if (model.arrival) h.arrival = model.arrival.slice(0, 16);
+  if (model.truck) h.truck = model.truck;
+  if (model.variety) h.variety = model.variety;
+  if (model.category) h.category = model.category;
+  h.calibres = model.calibres.map(l => ({ o: l.o, c: l.c, pal: l.pal, col: l.col }));
+  h.import = { lot: model.lot, n: model.pallets.length, at: new Date().toISOString(), subs: model.subs };
+
+  const p = pressures();
+  const n = slots(p);
+  const old = new Map((p.pallets || []).map(x => [String(x.n), x]));
+  p.pallets = model.pallets.map(mp => {
+    const o = old.get(String(mp.n));
+    return {
+      ...mp,
+      v: o?.v || Array.from({ length: n }, () => ''),
+      w: o?.w || Array.from({ length: p.fruits }, () => ''),
+      d: o?.d || {},
+      ...(o?.chk != null && o.chk !== '' ? { chk: o.chk } : {})
+    };
+  });
+  const keep = badPallets(h).filter(x => names.has(x));
+  h.bad_pallets = keep; h.bad_pallet = keep.join(', ');
+
+  touch();
+  paint();
+  toast(`Lot ${model.lot} : ${model.pallets.length} palette${model.pallets.length > 1 ? 's' : ''} reprise${
+    model.pallets.length > 1 ? 's' : ''} du journal`, '', {
+    action: 'Annuler', onAction: () => { draft = before; touch(); paint(); } });
 }
 
 /* -------------------------- détail du lot --------------------------
@@ -656,8 +858,9 @@ function refresh(changedKey) {
 function syncPressureFields() {
   const group = groupById(draft.product_group_id);
   const ctx = formCtx(group);
+  const linked = defectLinkedKeys(group, draft.header.pressures, draft.type);
   for (const f of flatFields(group, draft.type)) {
-    if (!PRESSURE_ROLES.includes(fieldRole(f))) continue;
+    if (!PRESSURE_ROLES.includes(fieldRole(f)) && !linked.has(f.key) && !lockedKeys.has(f.key)) continue;
     const row = document.querySelector(`.crit[data-key="${CSS.escape(f.key)}"]`);
     if (!row) continue;
     const auto = autoFilled(group, f, draft.header.pressures, draft.type);
@@ -677,6 +880,7 @@ function syncPressureFields() {
     else if (text) row.querySelector('.lb')?.insertAdjacentHTML('beforeend', `<small>${esc(text)}</small>`);
     const dot = row.querySelector('[data-dot]');
     if (dot) dot.className = 'dot ' + (statusIn(ctx, f, v) || 'none');
+    if (auto) lockedKeys.add(f.key); else lockedKeys.delete(f.key);
   }
   refreshCounts(group);
   paintBadPick();          // les palettes contrôlées viennent d'évoluer
@@ -695,6 +899,11 @@ function refreshCounts(group) {
   }
 }
 
+/* Champs verrouillés au dernier passage : quand le comptage des
+   défauts s'efface, ils doivent se déverrouiller, même s'ils ne sont
+   plus « liés ». */
+const lockedKeys = new Set();
+
 function refreshVerdict() {
   const group = groupById(draft.product_group_id);
   draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
@@ -702,6 +911,7 @@ function refreshVerdict() {
   draft.summary = computeSummary(group, draft.measures, draft.header.pressures, draft.type);
   const box = $('#verdict');
   if (box) box.innerHTML = verdictHtml(draft.summary);
+  paintRecSummary();
 }
 
 /* `paintPhotos` attend la base locale et les liens signés : deux appels
@@ -791,6 +1001,19 @@ function paintBadPick() {
     setBad(cur.includes(n) ? cur.filter(x => x !== n) : [...cur, n]);
     const inp = $('#fbad'); if (inp) inp.value = badPallets(draft.header).join(', ');
     paintBadPick();
+    paintFlags();
+  });
+}
+
+/* Le drapeau de chaque palette suit la liste des palettes
+   problématiques, d'où qu'elle ait été modifiée. */
+function paintFlags() {
+  const on = badPallets(draft.header);
+  $$('.pal').forEach(card => {
+    const pal = draft.header.pressures?.pallets?.[+card.dataset.i];
+    const bad = !!pal && on.includes(String(pal.n ?? '').trim());
+    card.classList.toggle('bad', bad);
+    card.querySelector('[data-flag]')?.setAttribute('aria-pressed', String(bad));
   });
 }
 
@@ -847,9 +1070,37 @@ async function keepDraftNow() {
 }
 
 /* ----------------------------- sauvegarde ----------------------------- */
+/* Pressions obligatoires : toutes les palettes du lot, et tous leurs
+   relevés. Le message dit lesquelles manquent — l'inspecteur n'a pas à
+   les chercher parmi vingt. */
+function pressureGaps() {
+  const group = groupById(draft.product_group_id);
+  if (!pressureRequired(group, draft.type)) return '';
+  const p = draft.header.pressures;
+  const pals = p?.pallets || [];
+  if (!pals.length)
+    return 'Contrôle par palette obligatoire pour ce produit : ajoutez les palettes, ou « Tout à 13 ».';
+  const need = (p.fruits || 5) * (p.sides || 2);
+  const miss = pals.filter(pl => (pl.v || []).filter(v => v !== '' && v != null).length < need);
+  if (miss.length) {
+    const names = miss.slice(0, 4).map(pl => String(pl.n ?? '?')).join(', ');
+    return `Pressions incomplètes sur ${miss.length} palette${miss.length > 1 ? 's' : ''} : ${names}${miss.length > 4 ? '…' : '.'}`;
+  }
+  const cap = palletCap();
+  if (cap && pals.length < cap)
+    return `Le lot compte ${cap} palettes, ${pals.length} seulement sont contrôlées.`;
+  return '';
+}
+
 async function save() {
   if (!draft.partner_name?.trim())
     return toast(`Indiquez le ${reportType(draft.type).partnerLabel.toLowerCase()}`, 'err');
+  const gap = pressureGaps();
+  if (gap) {
+    const sec = $('#prSec');
+    if (sec) { sec.open = true; sec.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+    return toast(gap, 'err', { ms: 6000 });
+  }
 
   const btn = $('#save'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span>';
   try {
@@ -865,7 +1116,12 @@ async function save() {
        colonne des pesées : un contrôle production où l'on a pesé cinq
        fruits sur trois palettes sans sortir le pénétromètre perdait
        palettes, calibres et poids à l'enregistrement. */
-    if (draft.header.pressures && !hasPressures(draft.header)) delete draft.header.pressures;
+    /* À la réception, une palette reprise du journal ou dont on a
+       compté les défauts garde sa ligne, même sans pression ni pesée :
+       c'est le détail que le fournisseur recevra. */
+    const kept = (draft.header.pressures?.pallets || []).some(pl =>
+      pl.sub || pl.ggn || Object.values(pl.d || {}).some(v => v !== '' && v != null));
+    if (draft.header.pressures && !hasPressures(draft.header) && !kept) delete draft.header.pressures;
 
     const group = groupById(draft.product_group_id);
     draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
@@ -1103,12 +1359,19 @@ function paintPressures() {
 
   const T = reportType(draft.type);
   const fillAt = fillValue(p, cfg);
+  const grp = groupById(draft.product_group_id);
+  const req = pressureRequired(grp, draft.type);
+  const defs = draft.type === 'reception' ? defectTypes(grp) : [];
+  const smp = samplingCfg(grp);
   body.innerHTML = `
     <p class="muted" style="margin:0 0 10px">
       ${p.fruits} fruit${p.fruits > 1 ? 's' : ''} prélevé${p.fruits > 1 ? 's' : ''} par palette,
       ${p.sides} mesure${p.sides > 1 ? 's' : ''} de pression chacun${T.weights ? ', plus leur poids' : ''}
       — soit ${n} relevé${n > 1 ? 's' : ''}${T.weights ? ` et ${p.fruits} pesée${p.fruits > 1 ? 's' : ''}` : ''} par palette.
-      Section facultative.</p>
+      ${req ? '<b>Obligatoire pour ce produit en réception.</b>' : 'Section facultative.'}</p>
+    ${defs.length ? `<p class="muted" style="margin:-4px 0 10px">Défauts comptés sur ${smp.boxes} colis ouverts par palette${
+      smp.perKg ? ` — le calibre donne le nombre de fruits d'un colis de ${String(smp.perKg).replace('.', ',')} kg`
+                : ' — le calibre donne le nombre de fruits du colis'}. Case vide = aucun fruit touché.</p>` : ''}
     ${refHtml(p)}
     <div class="btn-row" style="margin:12px 0">
       <button type="button" class="btn ghost sm" id="prFill">
@@ -1122,6 +1385,7 @@ function paintPressures() {
                remainingText() ? ` — reste ${remainingText()}` : ''}.`}</p>` : ''}
     ${overText() ? `<div class="err-box" style="margin:0 0 10px">${esc(overText())}</div>` : ''}
     <div id="prList"></div>
+    ${defs.length && p.pallets.length ? `<div class="rec-sum" id="recSum"></div>` : ''}
     ${p.pallets.length ? `<div class="card pad" style="margin-top:12px" id="prPreview"></div>` : ''}`;
 
   wireRef(p);
@@ -1150,7 +1414,11 @@ function paintPressures() {
         if (cur !== '' && cur != null) return cur;
         filled++; return ref;
       });
+      /* Tout ce que la palette porte déjà — n° réel, variété, colis,
+         défauts comptés — est conservé : seules les pressions vides se
+         remplissent. */
       return {
+        ...(old || {}),
         n: old?.n ?? String(i + 1),
         cal: old?.cal ?? spread[i] ?? '',
         v,
@@ -1181,9 +1449,9 @@ function paintPressures() {
   /* Sur un clavier d'ordinateur, Entrée ne fait rien dans un champ
      isolé : on lui donne le même effet que « Suivant » sur un
      téléphone, pour que la saisie se fasse d'une seule main. */
-  const measures = () => [...list.querySelectorAll('input[data-v],input[data-w]')];
+  const measures = () => [...list.querySelectorAll('input[data-v],input[data-w],input[data-d]')];
   list.onkeydown = (e) => {
-    if (e.key !== 'Enter' || !e.target.matches('input[data-v],input[data-w]')) return;
+    if (e.key !== 'Enter' || !e.target.matches('input[data-v],input[data-w],input[data-d]')) return;
     e.preventDefault();
     const all = measures();
     const next = all[all.indexOf(e.target) + 1];
@@ -1197,6 +1465,9 @@ function paintPressures() {
     const calSel = card.querySelector('[data-cal]');
     if (calSel) calSel.onchange = () => {
       p.pallets[i].cal = calSel.value;
+      /* Le nombre de fruits par colis suivait le calibre du journal :
+         changé à la main, c'est le nouveau calibre qui compte. */
+      delete p.pallets[i].count;
       touch(); paintPressures();
     };
     card.querySelectorAll('[data-w]').forEach(inp => inp.oninput = () => {
@@ -1209,6 +1480,8 @@ function paintPressures() {
       inp.classList.toggle('off', inp.value !== '' && min != null && Number(inp.value) < min);
       touch();
       refreshPalletAvg(card, p.pallets[i]);
+      refreshPalletSum(card, p.pallets[i]);
+      paintRecSummary();
     });
     card.querySelectorAll('[data-v]').forEach(inp => {
       inp.onblur = () => {
@@ -1242,12 +1515,47 @@ function paintPressures() {
     card.querySelector('[data-del]').onclick = () => {
       p.pallets.splice(i, 1); touch(); paintPressures();
     };
+
+    /* Défauts comptés : une case vide vaut zéro. */
+    card.querySelectorAll('[data-d]').forEach(inp => inp.oninput = () => {
+      const pal = p.pallets[i];
+      pal.d ||= {};
+      pal.d[inp.dataset.d] = inp.value === '' ? '' : Math.max(0, Math.round(Number(inp.value) || 0));
+      touch();
+      refreshPalletSum(card, pal);
+      refreshVerdict();
+    });
+
+    /* Informations de la palette (reprises du journal, corrigeables). */
+    card.querySelectorAll('[data-pi]').forEach(inp => inp.oninput = () => {
+      const pal = p.pallets[i], k = inp.dataset.pi;
+      pal[k] = inp.value === '' ? '' : (['boxKg', 'boxes', 'chk'].includes(k) ? Number(inp.value) : inp.value);
+      touch();
+      const main = card.querySelector('.pi-main');
+      if (main) main.textContent = palletInfoLine(pal);
+      const sub = card.querySelector('.pi-sub');
+      if (sub) sub.textContent = palletInfoSub(pal);
+      refreshPalletSum(card, pal);
+      refreshVerdict();
+    });
+
+    const flag = card.querySelector('[data-flag]');
+    if (flag) flag.onclick = () => {
+      const nm = String(p.pallets[i].n ?? '').trim();
+      if (!nm) return toast("Donnez d'abord un numéro à la palette", 'err');
+      const cur = badPallets(draft.header);
+      setBad(cur.includes(nm) ? cur.filter(x => x !== nm) : [...cur, nm]);
+      const inp = $('#fbad'); if (inp) inp.value = badPallets(draft.header).join(', ');
+      paintFlags();
+      paintBadPick();
+    };
   });
 
   const c = $('#prCount');
   if (c) c.textContent = p.pallets.length ? `${p.pallets.length} palette${p.pallets.length > 1 ? 's' : ''}` : '';
   paintPressurePreview();
   refreshVerdict();
+  paintBadPick();
 }
 
 /* Valeur du remplissage en un clic : la cible, ou le milieu de la
@@ -1437,9 +1745,14 @@ function palletHtml(pal, i, p) {
   const sp = spec();
   const opts = calibreOptions();
   const left = calibreRemaining(i);
+  const isRec = draft.type === 'reception';
+  const defs = isRec ? defectTypes(group) : [];
+  const bad = isRec && badPallets(draft.header).includes(String(pal.n ?? '').trim());
 
-  return `<div class="pal" data-i="${i}">
+  return `<div class="pal${isRec ? ' rec' : ''}${bad ? ' bad' : ''}" data-i="${i}">
     <div class="pal-top">
+      ${isRec ? `<button type="button" class="flag-btn" data-flag aria-pressed="${bad}"
+        aria-label="Palette problématique" title="Palette problématique">${icon('flag')}</button>` : ''}
       <span class="nm"><input type="text" data-n value="${esc(String(pal.n ?? ''))}" aria-label="N° de palette"></span>
       ${T.weights ? `<span class="cal"><select data-cal aria-label="Calibre de la palette">
         <option value="">calibre</option>
@@ -1465,6 +1778,7 @@ function palletHtml(pal, i, p) {
       <span class="avg">${resumeHtml(st, wst, sp, p)}</span>
       <button type="button" class="icon-btn" data-del aria-label="Retirer la palette">${icon('x')}</button>
     </div>
+    ${isRec ? palletInfoHtml(pal, group) : ''}
 
     <!-- Les champs sont écrits fruit par fruit — les deux joues du
          fruit 1, puis celles du fruit 2 — et replacés dans la grille
@@ -1498,7 +1812,106 @@ function palletHtml(pal, i, p) {
           class="${off ? 'off' : ''}" value="${v ?? ''}" aria-label="Poids du fruit ${f + 1}">`;
       }).join('')}
     </div>` : ''}
+    ${defs.length ? defectsHtml(pal, defs, group) : ''}
   </div>`;
+}
+
+/* ---- réception : identité de la palette, défauts, résumé ---- */
+const num2 = (v) => String(Math.round(Number(v) * 100) / 100);   // point décimal, comme le reste du rapport
+
+function palletInfoLine(pal) {
+  return [pal.variety, pal.boxKg ? `${num2(pal.boxKg)} kg` : '', pal.cal ? `cal. ${pal.cal}` : '',
+          pal.cat ? `cat. ${pal.cat}` : '', pal.origin ? countryName(pal.origin) : '',
+          pal.boxes ? `${pal.boxes} colis` : ''].filter(Boolean).join(' · ') || 'Informations de la palette';
+}
+function palletInfoSub(pal) {
+  return [pal.ggn ? `GGN ${pal.ggn}` : '', pal.producer, pal.brand ? `marque ${pal.brand}` : ''].filter(Boolean).join(' · ');
+}
+
+/* Repliées par défaut : reprises du journal, elles se relisent d'un
+   coup d'œil et ne se corrigent qu'à l'occasion. */
+function palletInfoHtml(pal, group) {
+  const smp = palletDefects({ ...pal, chk: '' }, group, []);
+  const f = (k, label, type = 'text', ph = '') => `<label class="pi"><span>${label}</span>
+    <input type="${type === 'text' ? 'text' : 'number'}"${type !== 'text' ? ` inputmode="${type}" step="any" min="0"` : ''}
+      data-pi="${k}" value="${esc(pal[k] ?? '')}" placeholder="${esc(ph)}"></label>`;
+  const sub = palletInfoSub(pal);
+  return `<details class="pal-info">
+    <summary><span class="pi-main">${esc(palletInfoLine(pal))}</span>
+      <span class="pi-sub">${esc(sub)}</span></summary>
+    <div class="pi-grid">
+      ${f('variety', 'Variété')}
+      ${f('boxKg', 'Poids net colis (kg)', 'decimal')}
+      ${f('cat', 'Catégorie')}
+      ${f('boxes', 'Colis', 'numeric')}
+      ${f('brand', 'Marque des colis')}
+      ${f('ggn', 'GGN', 'numeric')}
+      ${f('producer', 'Producteur')}
+      ${f('chk', 'Fruits contrôlés', 'numeric', smp.checked ? String(smp.checked) : 'à saisir')}
+    </div>
+  </details>`;
+}
+
+function defectsHtml(pal, defs, group) {
+  const dd = palletDefects(pal, group, defs);
+  return `<div class="pal-cap">Défauts <span class="mini" data-dcap>${dd.checked
+      ? `nombre de fruits touchés, sur ${dd.checked} contrôlés`
+      : 'nombre de fruits contrôlés inconnu — renseignez-le dans les informations de la palette'}</span></div>
+    <div class="def-grid">${defs.map(t => `<label class="def ${t.kind === 'loss' ? 'loss' : 'light'}">
+      <span>${esc(t.label)}</span>
+      <input type="number" inputmode="numeric" step="1" min="0" data-d="${esc(t.key)}" enterkeyhint="next"
+        placeholder="0" value="${pal.d?.[t.key] ?? ''}" aria-label="${esc(t.label)}"></label>`).join('')}</div>
+    <div class="pal-sum" data-psum>${palletSumHtml(pal, group, defs)}</div>`;
+}
+
+function palletSumHtml(pal, group, defs = defectTypes(group)) {
+  const dd = palletDefects(pal, group, defs);
+  const un = palletUnder(pal, group);
+  return [
+    `ext. <b>${dd.ext}</b> · int. <b>${dd.int}</b>`,
+    dd.checked ? `légers <b>${fmtPct(dd.lightPct)} %</b> · pertes <b class="${dd.loss ? 'lossv' : ''}">${fmtPct(dd.lossPct)} %</b>` : '',
+    un.weighed && un.min != null
+      ? `sous-calibre <b class="${un.under ? 'lossv' : ''}">${un.under}/${un.weighed}</b>${
+          un.under ? ` (${un.weights.map(w => Math.round(w)).join(', ')} g)` : ''} · ${fmtPct(un.pct, 0)} %`
+      : ''
+  ].filter(Boolean).join(' · ');
+}
+
+function refreshPalletSum(card, pal) {
+  const group = groupById(draft.product_group_id);
+  const box = card.querySelector('[data-psum]');
+  if (box) box.innerHTML = palletSumHtml(pal, group);
+  const cap = card.querySelector('[data-dcap]');
+  if (cap) {
+    const dd = palletDefects(pal, group, []);
+    cap.textContent = dd.checked ? `nombre de fruits touchés, sur ${dd.checked} contrôlés`
+      : 'nombre de fruits contrôlés inconnu — renseignez-le dans les informations de la palette';
+  }
+  const chk = card.querySelector('[data-pi="chk"]');
+  if (chk) { const dd = palletDefects({ ...pal, chk: '' }, group, []); chk.placeholder = dd.checked ? String(dd.checked) : 'à saisir'; }
+}
+
+/* Indicateurs du lot, sous la liste des palettes — les mêmes que ceux
+   du rapport. */
+function paintRecSummary() {
+  const box = $('#recSum');
+  if (!box) return;
+  const rs = receptionStats(draft.header.pressures, groupById(draft.product_group_id), draft.type);
+  if (!rs.active) { box.innerHTML = ''; return; }
+  /* Même couleur que sur la fiche : celle du verdict des critères que
+     les défauts remplissent (refreshVerdict vient de le recalculer). Le
+     sous-calibre, jugé par aucun critère, se lit directement. */
+  const tone = draft.summary?.reception?.tone || {};
+  const k = (label, v, t) => `<div class="kpi${t === 'warn' || t === 'fail' ? ' ' + t : ''}"><span>${label}</span><b>${v}</b>${
+    KPI_TONE[t] ? `<small>${KPI_TONE[t]}</small>` : ''}</div>`;
+  box.innerHTML = `<div class="kpis">
+      ${k('Sous-calibre', rs.underPct == null ? '—' : fmtPct(rs.underPct) + ' %', rs.underPct > 0 ? 'warn' : null)}
+      ${k('Défauts légers', rs.sampled ? fmtPct(rs.lightPct) + ' %' : '—', rs.sampled ? tone.light : null)}
+      ${k('Pertes', rs.sampled ? fmtPct(rs.lossPct) + ' %' : '—', rs.sampled ? tone.loss : null)}
+    </div>
+    <p class="hint" style="margin:6px 0 0">Sur ${rs.checkedTotal || 0} fruits contrôlés${
+      rs.fruitsTotal ? ` (${rs.fruitsTotal.toLocaleString('fr-FR')} fruits dans le lot)` : ''} ·
+      défauts externes ${rs.extCount} · internes ${rs.intCount}. Chaque palette pèse son nombre de fruits.</p>`;
 }
 
 /* Résumé d'une palette : sa moyenne, l'état de cette moyenne face à la

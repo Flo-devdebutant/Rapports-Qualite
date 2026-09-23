@@ -11,6 +11,7 @@
 
 import { PDF, PAGE, MARGIN, COLORS, textWidth } from './pdf.js';
 import { flatFields, statusIn, savedContext, ripenessField, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
+import { receptionStats, samplingCfg } from './reception.js';
 import { logoJpeg } from './logo.js';
 import { storage, currentUser } from './supa.js';
 import { local } from './store.js';
@@ -71,6 +72,52 @@ const T = {
         reportRec:'Aankomstrapport', reportShip:'Klantrapport uitgaand', conform:'Conform',
         nonConform:'Niet conform', wk:'wk', bl:'Vrachtbrief', origins:'Herkomsten', sizes:'Partijdetail', boxes:'Aantal colli', page:(i,n)=>`Pagina ${i} van ${n}` , pressures:'Drukmetingen', pressAvg:'Gemiddelde partij', palletWord:'pallet', palletsWord:'pallets', readings:'metingen', pressCurve:'Gemiddelde per pallet', pressRef:'Referentie', pallet:'Pallet', average:'Gemiddelde', carrier:'Vervoerder', voyage:'Reisnummer' , reportProd:'Productiecontrolerapport', packKind:'Verpakkingsvorm' , weightsTitle:'Gewicht per vrucht', weightAvg:'Gemiddelde', weighings:'wegingen', minRequired:'Min. vereist', underOne:'vrucht onder maat', underMany:'vruchten onder maat', underNone:'Geen vrucht onder het minimumgewicht van zijn maat.' , pressState:'Status', pressOk:'Conform', pressTol:'Getolereerd', pressMinor:'Geringe afwijking', pressMajor:'Grote afwijking', pressCrit:'Kritieke afwijking', pressRange:'Geaccepteerd bereik', pressZone:'Geaccepteerde zone', pressScaleT:(a,b,c)=>`${a} punt afwijking toegestaan; tot ${b} gering, tot ${c} groot, daarboven kritiek. Toegepast op het gemiddelde van elke pallet.`, pressScaleR:(t)=>`Binnen het bereik: conform. ${t} punt overschrijding wordt getolereerd; daarboven is de afwijking kritiek en de pallet niet conform. Toegepast op het gemiddelde van elke pallet.`, pressOff:(n)=>`${n} pallet${n>1?'s':''} buiten referentie`, refFrom:'volgens', ripeness:'Rijpheid partij:', photosMissing:(n)=>`${n} foto${n>1?`'s`:''} uit dit rapport ${n>1?'konden':'kon'} niet worden bijgevoegd.` }
 };
+
+/* Réception : date du quai, camion, indicateurs du lot et détail
+   par palette — dans les cinq langues, comme le reste du rapport. */
+const T_REC = {
+  fr: { arrivalDate:'Date de réception', truck:'N° de camion', kpiTitle:'Indicateurs du lot', under:'Sous-calibre',
+        light:'Défauts légers', loss:'Pertes', palletDetail:'Détail par palette', palletsId:'Identification des palettes',
+        defectsTitle:'Défauts par palette', underTitle:'Sous-calibre par palette', boxKg:'Colis (kg)', brand:'Marque',
+        producer:'Producteur', producers:'Producteurs', checked:'Contrôlés', ext:'Ext.', int:'Int.', lossPct:'Pertes %',
+        weighed:'Pesés', underN:'Sous-poids', underW:'Poids sous-calibrés (g)', underPct:'Sous-cal. %',
+        badLegend:'Palettes problématiques surlignées en rouge.', toneWarn:'à surveiller', toneFail:'hors tolérance',
+        kpiNote:(c, f) => `Sur ${c} fruits contrôlés${f ? ` (${f} fruits dans le lot)` : ''}. Chaque palette pèse son nombre de fruits.`,
+        defNote:(b) => `Nombre de fruits touchés, comptés sur ${b} colis ouverts par palette. Pertes : % des fruits contrôlés.` },
+  en: { arrivalDate:'Arrival date', truck:'Truck No.', kpiTitle:'Lot indicators', under:'Undersize',
+        light:'Minor defects', loss:'Losses', palletDetail:'Pallet details', palletsId:'Pallet identification',
+        defectsTitle:'Defects per pallet', underTitle:'Undersize per pallet', boxKg:'Box (kg)', brand:'Brand',
+        producer:'Grower', producers:'Growers', checked:'Checked', ext:'Ext.', int:'Int.', lossPct:'Losses %',
+        weighed:'Weighed', underN:'Underweight', underW:'Undersized weights (g)', underPct:'Undersize %',
+        badLegend:'Problem pallets highlighted in red.', toneWarn:'to monitor', toneFail:'out of tolerance',
+        kpiNote:(c, f) => `Based on ${c} fruit checked${f ? ` (${f} fruit in the lot)` : ''}. Each pallet is weighted by its number of fruit.`,
+        defNote:(b) => `Number of affected fruit, counted in ${b} boxes opened per pallet. Losses: % of fruit checked.` },
+  it: { arrivalDate:'Data di arrivo', truck:'N. camion', kpiTitle:'Indicatori del lotto', under:'Sottocalibro',
+        light:'Difetti lievi', loss:'Perdite', palletDetail:'Dettaglio per pallet', palletsId:'Identificazione dei pallet',
+        defectsTitle:'Difetti per pallet', underTitle:'Sottocalibro per pallet', boxKg:'Collo (kg)', brand:'Marchio',
+        producer:'Produttore', producers:'Produttori', checked:'Controllati', ext:'Est.', int:'Int.', lossPct:'Perdite %',
+        weighed:'Pesati', underN:'Sottopeso', underW:'Pesi sottocalibro (g)', underPct:'Sottocal. %',
+        badLegend:'Pallet problematici evidenziati in rosso.', toneWarn:'da monitorare', toneFail:'fuori tolleranza',
+        kpiNote:(c, f) => `Su ${c} frutti controllati${f ? ` (${f} frutti nel lotto)` : ''}. Ogni pallet pesa per il suo numero di frutti.`,
+        defNote:(b) => `Numero di frutti colpiti, contati su ${b} colli aperti per pallet. Perdite: % dei frutti controllati.` },
+  es: { arrivalDate:'Fecha de llegada', truck:'N.º de camión', kpiTitle:'Indicadores del lote', under:'Subcalibre',
+        light:'Defectos leves', loss:'Pérdidas', palletDetail:'Detalle por palé', palletsId:'Identificación de los palés',
+        defectsTitle:'Defectos por palé', underTitle:'Subcalibre por palé', boxKg:'Caja (kg)', brand:'Marca',
+        producer:'Productor', producers:'Productores', checked:'Controlados', ext:'Ext.', int:'Int.', lossPct:'Pérdidas %',
+        weighed:'Pesados', underN:'Bajo peso', underW:'Pesos subcalibre (g)', underPct:'Subcal. %',
+        badLegend:'Palés problemáticos resaltados en rojo.', toneWarn:'a vigilar', toneFail:'fuera de tolerancia',
+        kpiNote:(c, f) => `Sobre ${c} frutos controlados${f ? ` (${f} frutos en el lote)` : ''}. Cada palé pondera según su número de frutos.`,
+        defNote:(b) => `Número de frutos afectados, contados en ${b} cajas abiertas por palé. Pérdidas: % de los frutos controlados.` },
+  nl: { arrivalDate:'Aankomstdatum', truck:'Vrachtwagennr.', kpiTitle:'Kerncijfers partij', under:'Ondermaat',
+        light:'Lichte gebreken', loss:'Verliezen', palletDetail:'Details per pallet', palletsId:'Identificatie van de pallets',
+        defectsTitle:'Gebreken per pallet', underTitle:'Ondermaat per pallet', boxKg:'Colli (kg)', brand:'Merk',
+        producer:'Teler', producers:'Telers', checked:'Gecontroleerd', ext:'Uitw.', int:'Inw.', lossPct:'Verlies %',
+        weighed:'Gewogen', underN:'Ondergewicht', underW:'Gewichten ondermaat (g)', underPct:'Ondermaat %',
+        badLegend:'Probleempallets rood gemarkeerd.', toneWarn:'aandachtspunt', toneFail:'buiten tolerantie',
+        kpiNote:(c, f) => `Op ${c} gecontroleerde vruchten${f ? ` (${f} vruchten in de partij)` : ''}. Elke pallet weegt naar zijn aantal vruchten.`,
+        defNote:(b) => `Aantal aangetaste vruchten, geteld in ${b} geopende colli per pallet. Verliezen: % van de gecontroleerde vruchten.` }
+};
+for (const l of Object.keys(T_REC)) Object.assign(T[l], T_REC[l]);
 
 /* ------------------------------------------------------------------
    Traduction du contenu, pas seulement des titres.
@@ -139,6 +186,15 @@ const TERMS = {
   'Dégâts de froid':      { en:'Chilling injury', it:'Danni da freddo', es:'Daños por frío', nl:'Koudeschade' },
   'Brunissement vasculaire':{ en:'Vascular browning', it:'Imbrunimento vascolare', es:'Pardeamiento vascular', nl:'Vaatbruinverkleuring' },
   'Coups de soleil':      { en:'Sunburn', it:'Scottature solari', es:'Quemaduras de sol', nl:'Zonnebrand' },
+  /* --- défauts comptés palette par palette (réception) --- */
+  'Lenticelle':           { en:'Lenticel damage', it:'Lenticelle', es:'Lenticelas', nl:'Lenticellen' },
+  'Lenticelles':          { en:'Lenticel damage', it:'Lenticelle', es:'Lenticelas', nl:'Lenticellen' },
+  'Griffures':            { en:'Scratches', it:'Graffi', es:'Rasguños', nl:'Krassen' },
+  'Anthracnose':          { en:'Anthracnose', it:'Antracnosi', es:'Antracnosis', nl:'Antracnose' },
+  'Taches de froid':      { en:'Chilling spots', it:'Macchie da freddo', es:'Manchas de frío', nl:'Koudevlekken' },
+  'Pulpe grise':          { en:'Grey pulp', it:'Polpa grigia', es:'Pulpa gris', nl:'Grijze pulp' },
+  'Brûlure de sève':      { en:'Sap burn', it:'Bruciatura da linfa', es:'Quemadura de savia', nl:'Sapverbranding' },
+  'Effondrement interne': { en:'Internal breakdown', it:'Collasso interno', es:'Colapso interno', nl:'Inwendig bederf' },
   'Pourriture / Anthracnose':{ en:'Decay / Anthracnose', it:'Marciume / Antracnosi', es:'Podredumbre / Antracnosis', nl:'Rot / Antracnose' },
   'Caisses échantillon':  { en:'Sample boxes', it:'Colli campione', es:'Cajas muestra', nl:'Steekproefcolli' },
   'Caisses problématiques':{ en:'Problem boxes', it:'Colli problematici', es:'Cajas problemáticas', nl:'Probleemcolli' },
@@ -314,6 +370,8 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
   if (origins.length) doc.row(origins.length > 1 ? t.origins : t.origin, countryNames(origins, lang));
   if (h.carrier) doc.row(t.carrier, h.carrier);
   if (RT.voyage && (h.voyage || h.load_id)) doc.row(t.voyage, h.voyage || h.load_id);
+  if (h.arrival) doc.row(t.arrivalDate, wallDate(h.arrival));
+  if (h.truck) doc.row(t.truck, h.truck);
   /* Hors réception, il n'y a pas de n° de voyage où loger l'identifiant
      de chargement : il n'apparaissait alors nulle part dans le PDF,
      alors que c'est parfois la seule référence de traçabilité du
@@ -340,6 +398,31 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
         nc: s.nc == null ? '' : String(s.nc),
         pal: fmt(m.pal_count), bad: badCell(h), lot: (isShip ? h.bl : h.lot) || '' } ]
   );
+
+  /* -- Indicateurs de la réception : en tête, c'est ce que le
+     fournisseur lit en premier. -- */
+  const recK = report.type === 'reception' ? (s.reception || null) : null;
+  if (recK && (recK.checked || recK.weighed)) {
+    /* Couleur ET mot : ceux du verdict des critères que l'indicateur
+       remplit (verdict.js, receptionTones). Un rapport enregistré avant
+       ce calcul n'a pas de ton : chiffres en noir, sans jugement. */
+    const tone = recK.tone || {};
+    const cell = (v, tn) => ({
+      v: v == null ? '—' : pctTxt(v, lang) + ' %' + (tn === 'fail' ? ` — ${t.toneFail}` : tn === 'warn' ? ` — ${t.toneWarn}` : ''),
+      bold: true,
+      color: tn === 'fail' ? COLORS.RED : tn === 'warn' ? COLORS.SEV_INK.mineur : COLORS.BLACK });
+    doc.need(46);
+    doc.subhead(t.kpiTitle);
+    doc.table(
+      [ { k:'u', h:t.under, w:120 }, { k:'l', h:t.light, w:120 }, { k:'p', h:t.loss, w:120 } ],
+      [ { u: cell(recK.under, tone.under), l: cell(recK.light, tone.light), p: cell(recK.loss, tone.loss) } ]);
+    if (recK.checked) {
+      doc.need(12);
+      doc.text(t.kpiNote(recK.checked.toLocaleString(numLocale(lang)), recK.fruits ? Number(recK.fruits).toLocaleString(numLocale(lang)) : ''),
+        MARGIN, doc.y + 4, { size: 7.6, color: COLORS.GREY });
+      doc.y += 12;
+    }
+  }
 
   /* -- Calibres -- (seulement si l'envoi en mélange plusieurs, ou si
      le détail palettes/colis a été saisi : sinon le calibre figure
@@ -410,9 +493,10 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
   const ripe = s.ripeness?.stage;
   const ripeOpt = ripe && (ripenessField(group, report.type)?.options || []).find(o => o.v === ripe);
   const ripeText = ripe ? trLabel(lang, ripe, ripeOpt?.i18n) : null;
-  if (pStats) drawPressures(doc, h.pressures, pStats, t, lang, refSpec(h.pressures, group), pressureVerdict(h.pressures, group), ripeText);
+  if (pStats) drawPressures(doc, h.pressures, pStats, t, lang, refSpec(h.pressures, group), pressureVerdict(h.pressures, group), ripeText, badPallets(h));
   const wStats = weightLotStats(h.pressures, group);
-  if (wStats) drawWeights(doc, h.pressures, wStats, group, t, lang);
+  if (wStats) drawWeights(doc, h.pressures, wStats, group, t, lang, badPallets(h));
+  if (report.type === 'reception') drawReceptionPallets(doc, h, group, t, lang);
 
   /* -- Remarques -- */
   if (report.remarks?.trim()) {
@@ -462,7 +546,7 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
    et la référence. Les valeurs ne sont posées que sur les points qui
    portent l'information : les extrêmes, les bornes, et tout point hors
    tolérance. */
-function drawPressures(doc, pressures, stats, t, lang, spec, pv, ripe) {
+function drawPressures(doc, pressures, stats, t, lang, spec, pv, ripe, bad = []) {
   const unit = pressures.unit || 'kg';
   const SEVT = { ok: t.pressOk, mineur: t.pressMinor, majeur: t.pressMajor, critique: t.pressCrit };
   const col = (lvl) => lvl ? COLORS.SEV[lvl] : COLORS.SERIES;
@@ -619,8 +703,10 @@ function drawPressures(doc, pressures, stats, t, lang, spec, pv, ripe) {
      langues : la colonne est taillée pour qu'il tienne sur une ligne. */
   if (spec) cols.push({ k: 'st', h: t.pressState, w: 104 });
 
+  const badSet = new Set(bad);
   doc.table(cols, (pressures.pallets || []).map(pal => {
-    const row = { n: String(pal.n ?? '') };
+    const nm = String(pal.n ?? '');
+    const row = badSet.has(nm.trim()) ? { _bg: BAD_BG, n: { v: nm, bold: true, color: COLORS.RED } } : { n: nm };
     const vals = [];
     (pal.v || []).forEach((v, i) => {
       row['v' + i] = (v === '' || v == null) ? '' : fmtP(Number(v)).replace('.0', '');
@@ -649,8 +735,9 @@ function drawMark(doc, level, x, y, color) {
    le minimum de leur calibre. Ils sortent en rouge, et le compte est
    annoncé en tête — c'est l'information que le lecteur doit voir en
    premier, pas après avoir relu cinquante nombres. */
-function drawWeights(doc, pressures, stats, group, t, lang) {
+function drawWeights(doc, pressures, stats, group, t, lang, bad = []) {
   const fruits = pressures.fruits || 5;
+  const badSet = new Set(bad);
   doc.need(90);
   doc.sectionTitle(t.weightsTitle);
 
@@ -667,16 +754,23 @@ function drawWeights(doc, pressures, stats, group, t, lang) {
     MARGIN, doc.y + 8, { size: 9, bold: true, color: stats.under ? COLORS.RED : COLORS.GREEN });
   doc.y += 18;
 
-  const cols = [{ k: 'n', h: t.pallet, w: 52 }, { k: 'cal', h: t.calibre, w: 60 }];
-  for (let f = 1; f <= fruits; f++) cols.push({ k: 'w' + (f - 1), h: `F${f}`, w: 46 });
-  cols.push({ k: 'avg', h: t.average, w: 50 }, { k: 'min', h: t.minRequired, w: 56 });
+  const cols = [{ k: 'n', h: t.pallet, w: 76 }, { k: 'cal', h: t.calibre, w: 44 }];
+  for (let f = 1; f <= fruits; f++) cols.push({ k: 'w' + (f - 1), h: `F${f}`, w: 40 });
+  cols.push({ k: 'avg', h: t.average, w: 46 }, { k: 'min', h: t.minRequired, w: 50 },
+            { k: 'un', h: t.underN, w: 50 }, { k: 'up', h: t.underPct, w: 48 });
 
   doc.table(cols, (pressures.pallets || [])
     .filter(pal => (pal.w || []).some(v => v !== '' && v != null))
     .map(pal => {
       const min = calibreMin(group, pal.cal);
       const st = weightStats(pal, min);
-      const row = { n: String(pal.n ?? ''), cal: pal.cal || '', min: min != null ? fmtG(min) : '' };
+      const nm = String(pal.n ?? '');
+      const row = { n: nm, cal: pal.cal || '', min: min != null ? fmtG(min) : '' };
+      if (badSet.has(nm.trim())) { row._bg = BAD_BG; row.n = { v: nm, bold: true, color: COLORS.RED }; }
+      if (st && min != null) {
+        row.un = st.under ? { v: `${st.under}/${st.n}`, bold: true, color: COLORS.RED } : `0/${st.n}`;
+        row.up = pctTxt((st.under / st.n) * 100, lang, 0);
+      }
       (pal.w || []).forEach((v, i) => {
         if (v === '' || v == null) { row['w' + i] = ''; return; }
         const under = min != null && Number(v) < min;
@@ -685,6 +779,94 @@ function drawWeights(doc, pressures, stats, group, t, lang) {
       row.avg = st ? fmtG(st.avg) : '';
       return row;
     }));
+}
+
+/* Fond des palettes problématiques : un rouge très pâle, qui laisse
+   le texte lisible une fois imprimé en noir et blanc. */
+const BAD_BG = [0.99, 0.89, 0.89];
+
+/* « 2026-09-22T08:38 » → « 22/09/2026 08:38 », l'heure du quai. */
+const wallDate = (s) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}${s.length > 10 ? ' ' + s.slice(11, 16) : ''}` : '');
+const numLocale = (lang) => ({ fr: 'fr-FR', en: 'en-GB', it: 'it-IT', es: 'es-ES', nl: 'nl-NL' }[lang] || 'fr-FR');
+/* Point décimal dans toutes les langues, comme le reste du rapport
+   (critères, pressions, poids) : une page ne mélange pas « 1,7 % » et
+   « 1.52 % ». `lang` reste en paramètre pour les appels existants. */
+const pctTxt = (v, lang, dp = 1) => {
+  if (v == null || !isFinite(v)) return '';
+  return (Math.round(v * 10 ** dp) / 10 ** dp).toFixed(dp);
+};
+const numTxt = (v, lang) => String(Math.round(Number(v) * 100) / 100);
+
+/* Réception : une ligne par palette reçue — n° réel, variété, colis,
+   calibre, catégorie, marque, GGN — puis les défauts comptés. Les
+   palettes problématiques sont surlignées dans chaque tableau. */
+function drawReceptionPallets(doc, h, group, t, lang) {
+  const pals = h.pressures?.pallets || [];
+  if (!pals.length) return;
+  const rs = receptionStats(h.pressures, group, 'reception');
+  const bad = new Set(badPallets(h));
+  const mark = (n) => bad.has(n) ? { _bg: BAD_BG, n: { v: n, bold: true, color: COLORS.RED } } : { n };
+
+  const ident = pals.some(p => p.sub || p.ggn || p.variety || p.boxes || p.cat || p.brand);
+  if (!ident && !(rs.defs.length && rs.sampled)) return;
+  doc.need(140);
+  doc.sectionTitle(t.palletDetail);
+  if (ident) {
+  doc.subhead(t.palletsId);
+  doc.table([
+      { k: 'n', h: t.pallet, w: 96 }, { k: 'va', h: t.variety, w: 60 }, { k: 'kg', h: t.boxKg, w: 42 },
+      { k: 'c', h: t.calibre, w: 42 }, { k: 'ca', h: t.category, w: 48 }, { k: 'b', h: t.brand, w: 54 },
+      { k: 'g', h: 'GGN', w: 82 }, { k: 'o', h: t.origin, w: 54 }, { k: 'bx', h: t.boxes, w: 40 } ],
+    rs.rows.map(x => ({ ...mark(x.n), va: x.p.variety || '', kg: x.p.boxKg ? numTxt(x.p.boxKg, lang) : '',
+      c: x.p.cal || '', ca: x.p.cat || '', b: x.p.brand || '', g: x.p.ggn || '',
+      o: x.p.origin ? countryName(x.p.origin, lang) : '', bx: x.p.boxes ?? '' })),
+    { size: 7.8, headSize: 7.8 });
+
+  /* Producteurs : leurs noms sont longs, on les donne une fois, sous
+     le tableau, rattachés à leur GGN. */
+  const prods = [...new Map(pals.filter(p => p.ggn || p.producer).map(p => [`${p.ggn}|${p.producer}`, p])).values()];
+  if (prods.length) {
+    doc.need(14);
+    doc.text(t.producers, MARGIN, doc.y + 6, { size: 7.8, bold: true });
+    doc.y += 11;
+    for (const p of prods) {
+      for (const ln of splitToWidth(`${p.ggn ? 'GGN ' + p.ggn : ''}${p.ggn && p.producer ? ' — ' : ''}${p.producer || ''}`,
+                                    7.6, PAGE.w - 2 * MARGIN - 8)) {
+        doc.need(10);
+        doc.text(ln, MARGIN + 6, doc.y + 6, { size: 7.6, color: COLORS.GREY });
+        doc.y += 9.5;
+      }
+    }
+    doc.y += 6;
+  }
+  }
+
+  if (rs.defs.length && rs.sampled) {
+    doc.need(120);
+    doc.subhead(t.defectsTitle);
+    const cols = [{ k: 'n', h: t.pallet, w: 96 }, { k: 'ck', h: t.checked, w: 44 },
+      ...rs.defs.map(d => ({ k: 'd_' + d.key, h: trLabel(lang, d.label, d.i18n), w: 30, rot: true })),
+      { k: 'e', h: t.ext, w: 30 }, { k: 'i', h: t.int, w: 30 }, { k: 'l', h: t.lossPct, w: 46 }];
+    doc.table(cols, rs.rows.map(x => {
+      const row = { ...mark(x.n), ck: x.def.checked ?? '', e: x.def.ext || '', i: x.def.int || '',
+        l: x.def.checked == null ? '' : x.def.loss
+          ? { v: pctTxt(x.def.lossPct, lang), bold: true, color: COLORS.RED } : pctTxt(0, lang) };
+      for (const d of rs.defs) row['d_' + d.key] = x.def.counts[d.key] || '';
+      return row;
+    }), { size: 7.8, headSize: 7.4 });
+    const note = t.defNote(samplingCfg(group).boxes);
+    for (const ln of splitToWidth(note, 7.6, PAGE.w - 2 * MARGIN)) {
+      doc.need(10);
+      doc.text(ln, MARGIN, doc.y + 4, { size: 7.6, color: COLORS.GREY });
+      doc.y += 9.5;
+    }
+  }
+  if (bad.size) {
+    doc.need(14);
+    doc.rect(MARGIN, doc.y + 1, 10, 7, { fill: BAD_BG, stroke: COLORS.RED, lw: 0.5 });
+    doc.text(t.badLegend, MARGIN + 15, doc.y + 7.5, { size: 7.8, color: COLORS.GREY });
+    doc.y += 14;
+  }
 }
 
 /* Palettes problématiques : le NOMBRE d'abord — c'est ce que le client

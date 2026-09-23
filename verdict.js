@@ -11,6 +11,7 @@
 
 import { pressureVerdict, lotStats } from './pressure.js';
 import { appliesTo, isHidden, fieldLive } from './report-types.js';
+import { receptionStats, defectLinkedKeys, defectTypes, resolveLink } from './reception.js';
 
 /* Gravité réellement appliquée. Sur un pourcentage ou une liste de
    choix, le barème possède déjà son propre échelon « à surveiller » :
@@ -46,6 +47,11 @@ export function fieldStatus(field, raw) {
        ferait compter 80 % de fruits éclatés comme une bonne note et
        remonterait les étoiles. */
     if (field.failAt == null && field.warnAt == null) return null;
+    /* 0 % de défaut n'est jamais un défaut. Un seuil réglé à 0 veut
+       dire « le moindre fruit touché » : sans cette ligne, un lot
+       sans aucune pulpe grise sortait « à surveiller » dès que le
+       comptage par palette remplissait le critère à 0. */
+    if (n <= 0) return 'ok';
     if (field.failAt != null && n >= field.failAt) return 'fail';
     if (field.warnAt != null && n >= field.warnAt) return 'warn';
     return 'ok';
@@ -271,8 +277,12 @@ function derivedField(group, f, type) {
   return !!rf && rf.key === f.key && ripenessBands(group, type).length > 0;
 }
 
+/* Rempli tout seul depuis le contrôle par palette : les duretés et le
+   stade (relevé de pressions), et à la réception les % de défauts liés
+   au comptage palette par palette. */
 export function autoFilled(group, f, pressures, type) {
-  return !!lotStats(pressures) && derivedField(group, f, type);
+  return (!!lotStats(pressures) && derivedField(group, f, type))
+    || defectLinkedKeys(group, pressures, type).has(f.key);
 }
 
 /* ------------------------------------------------------------------
@@ -490,11 +500,54 @@ export function computeSummary(group, measures, pressures, type) {
     nc: nc == null ? null : Math.round(nc * 100) / 100,
     tolerance, fails, warns, oks, critical, flagged,
     ripeness: band ? { stage: band.stage, avg: lot.avg } : null,
+    reception: receptionSummary(group, pressures, type, receptionTones(group, type, fields, ctx, measures)),
     /* Champs décrits sans être jugés, figés avec le verdict : la fiche,
        le PDF et l'Excel les affichent comme le calcul les a comptés. */
     descriptive: [...ctx.descriptive],
     pressure: pv ? { worst: pv.worst, count: pv.count, ref: pv.spec } : null
   };
+}
+
+/* Indicateurs de la réception, figés avec le verdict : la fiche, le
+   PDF, l'Excel et les statistiques lisent les mêmes chiffres. */
+function receptionSummary(group, pressures, type, tones) {
+  if (type !== 'reception') return null;
+  const rs = receptionStats(pressures, group, type);
+  if (!rs.active && !rs.weighedCount) return null;
+  if (!rs.sampled && !rs.weighedCount) return null;
+  const r2 = (v) => (v == null ? null : Math.round(v * 100) / 100);
+  return { light: r2(rs.lightPct), loss: r2(rs.lossPct), under: r2(rs.underPct),
+           checked: rs.checkedTotal, fruits: rs.fruitsTotal,
+           ext: rs.extCount, int: rs.intCount, underCount: rs.underCount, weighed: rs.weighedCount,
+           tone: {
+             light: rs.sampled ? tones?.light || null : null,
+             loss: rs.sampled ? tones?.loss || null : null,
+             under: rs.underPct == null ? null : rs.underPct > 0 ? 'warn' : 'ok'
+           } };
+}
+
+/* Couleur des indicateurs du lot : celle du verdict des critères qu'ils
+   remplissent. Un chiffre non nul n'est pas un défaut en soi — 0,2 % de
+   pertes sur un lot conforme ne s'affiche pas en rouge sur le PDF que
+   reçoit le fournisseur. Le sous-calibre, qu'aucun critère de la grille
+   ne juge, reste un simple « à surveiller » (voir receptionSummary). */
+function receptionTones(group, type, fields, ctx, measures) {
+  if (type !== 'reception') return null;
+  const byKey = new Map(fields.map(f => [f.key, f]));
+  const worst = (loss) => {
+    let tone = null;
+    for (const t of defectTypes(group)) {
+      if ((t.kind === 'loss') !== loss) continue;
+      const k = resolveLink(t, group, type);
+      const f = k && byKey.get(k);
+      const st = f ? statusIn(ctx, f, measures[k]) : null;
+      if (st === 'fail') return 'fail';
+      if (st === 'warn') tone = 'warn';
+      else if (st === 'ok' && !tone) tone = 'ok';
+    }
+    return tone;
+  };
+  return { light: worst(false), loss: worst(true) };
 }
 
 const numOr = (v, d) => {
@@ -530,6 +583,14 @@ export function applyComputed(group, measures, pressures, type) {
       if (role === 'ripeness' && band) out[f.key] = band.stage;
       delete out['_manual_' + f.key];
     }
+  }
+
+  /* --- Défauts comptés palette par palette (réception) ---
+     Chaque critère lié reçoit le % du lot : c'est le même chiffre que
+     celui du tableau par palette, pas une seconde saisie. */
+  if (type === 'reception') {
+    const rs = receptionStats(pressures, group, type);
+    if (rs.sampled) for (const [k, v] of rs.links) { out[k] = round2(v); delete out['_manual_' + k]; }
   }
 
   for (const f of flatFields(group)) {

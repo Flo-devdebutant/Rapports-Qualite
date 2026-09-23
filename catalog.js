@@ -145,14 +145,23 @@ const AVOCAT = {
           okMin: 1, okMax: 14, severity: 'majeur' },
         { key: 'soft_pct', label: 'Mûr/Mou', unit: '%', type: 'pct', warnAt: 5, failAt: 10, severity: 'majeur' }
       ]},
+      /* À la réception, ces pourcentages se remplissent seuls à partir
+         des défauts comptés palette par palette (Réglages > produit >
+         Réception) : chaque défaut compté alimente le critère du même
+         nom. Défauts légers : lenticelles, griffures, coups de soleil ;
+         pertes : anthracnose, froid, pourriture, brunissement
+         vasculaire, pulpe grise. */
       { id: 'troubles', label: 'Troubles / Maladies', fields: [
         { key: 'spots_pct',    label: 'Taches / Maculatures', unit: '%', type: 'pct', warnAt: 5,  failAt: 10, severity: 'majeur' },
         { key: 'lenticel_pct', label: 'Dommages lenticelles', unit: '%', type: 'pct', warnAt: 5,  failAt: 10, severity: 'mineur' },
+        { key: 'scratch_pct',  label: 'Griffures',            unit: '%', type: 'pct', warnAt: 5,  failAt: 10, severity: 'mineur' },
         { key: 'bruise_pct',   label: 'Blessures / Chocs',    unit: '%', type: 'pct', warnAt: 3,  failAt: 8,  severity: 'majeur' },
         { key: 'chill_pct',    label: 'Dégâts de froid',      unit: '%', type: 'pct', warnAt: 2,  failAt: 5,  severity: 'majeur' },
         { key: 'vasc_pct',     label: 'Brunissement vasculaire', unit: '%', type: 'pct', warnAt: 5, failAt: 10, severity: 'majeur' },
+        { key: 'greypulp_pct', label: 'Pulpe grise',          unit: '%', type: 'pct', warnAt: 2,  failAt: 5,  severity: 'majeur' },
         { key: 'sunburn_pct',  label: 'Coups de soleil',      unit: '%', type: 'pct', warnAt: 3,  failAt: 8,  severity: 'mineur' },
-        { key: 'decay_pct',    label: 'Pourriture / Anthracnose', unit: '%', type: 'pct', warnAt: 0.5, failAt: 1, severity: 'critique',
+        { key: 'anthrac_pct',  label: 'Anthracnose',          unit: '%', type: 'pct', warnAt: 0.5, failAt: 1, severity: 'critique' },
+        { key: 'decay_pct',    label: 'Pourriture',           unit: '%', type: 'pct', warnAt: 0.5, failAt: 1, severity: 'critique',
           hint: 'FFV-42 : tolérance 1 % de pourriture' }
       ]},
       QUANTITE

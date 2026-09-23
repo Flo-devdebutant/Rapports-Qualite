@@ -12,6 +12,8 @@ import { lotStats, weightLotStats, pressureConfig, fmtP, fmtG,
          pressureVerdict, refSpec, refText, SEV_LABEL } from './pressure.js';
 import { pressureChartSVG, pressureTable, weightTable } from './pressure-chart.js';
 import { reportType, TYPE_LIST, badPallets } from './report-types.js';
+import { receptionStats, fmtPct, KPI_TONE } from './reception.js';
+import { palletStats } from './pressure.js';
 
 const filters = { q: '', type: '', group: '', partner: '', verdict: '', from: '', to: '' };
 
@@ -245,6 +247,8 @@ export async function renderReportView(id) {
           ? kv('N° de Voyage', r.header.voyage || r.header.load_id) : ''}
       ${r.header?.order ? kv('Commande', r.header.order) : ''}
       ${r.header?.lot ? kv('N° de lot', r.header.lot) : ''}
+      ${r.header?.arrival ? kv('Date de réception', fmtWall(r.header.arrival)) : ''}
+      ${r.header?.truck ? kv('N° de camion', r.header.truck) : ''}
       ${r.header?.bl ? kv('N° de BL', r.header.bl) : ''}
       ${r.header?.packaging_kind ? kv('Conditionnement', r.header.packaging_kind) : ''}
       ${r.header?.category ? kv('Catégorie', r.header.category) : ''}
@@ -252,6 +256,8 @@ export async function renderReportView(id) {
           `${badPallets(r.header).length} — n° ${badPallets(r.header).join(', ')}`) : ''}
       ${kv('Contrôlé par', r.inspector_name || '')}
     </div>
+
+    ${receptionBlock(r, grid)}
 
     ${[...bySection].map(([label, list]) => `
       <details class="sec" open style="margin-top:12px"><summary>${esc(label)} <span class="caret">▾</span></summary>
@@ -333,7 +339,7 @@ function pressureBlock(r, group) {
         ['critique', 'majeur', 'mineur'].filter(l => pv.count[l])
           .map(l => `${pv.count[l]} ${SEV_LABEL[l].toLowerCase()}`).join(', ')}.</div>` : ''}
     ${pressureChartSVG(p, { spec: sp, unit: p.unit })}
-    ${pressureTable(p, cfg, sp)}
+    ${pressureTable(p, cfg, sp, new Set(badPallets(r.header)))}
   </div>` : ''}
   ${wst ? `<div class="card pad" style="margin-top:12px">
     <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:4px">
@@ -345,11 +351,83 @@ function pressureBlock(r, group) {
       ? `<div class="err-box" style="margin:6px 0 4px"><b>${wst.under} fruit${wst.under > 1 ? 's' : ''} sous-calibré${wst.under > 1 ? 's' : ''}</b>
            sur ${wst.measures} pesée${wst.measures > 1 ? 's' : ''} — repérés en rouge ci-dessous.</div>`
       : `<div class="ok-box" style="margin:6px 0 4px">Aucun fruit sous le poids minimum de son calibre.</div>`}
-    ${weightTable(p, cfg, group)}
+    ${weightTable(p, cfg, group, new Set(badPallets(r.header)))}
   </div>` : ''}`;
 }
 
 const nonOk = (pv) => pv.count.mineur + pv.count.majeur + pv.count.critique;
+
+/* « 2026-09-22T08:38 » → « 22/09/2026 à 08:38 » : l'heure du quai,
+   telle que l'ERP l'a notée. */
+export const fmtWall = (s) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}${
+  s.length > 10 ? ' à ' + s.slice(11, 16) : ''}` : '');
+const num2 = (v) => String(Math.round(Number(v) * 100) / 100);   // point décimal, comme le reste du rapport
+
+/* Réception : les trois indicateurs du lot en tête, puis une ligne par
+   palette — n° réel, identité, pression, défauts, sous-calibre. Les
+   palettes problématiques sont surlignées. */
+function receptionBlock(r, grid) {
+  if (r.type !== 'reception') return '';
+  const p = r.header?.pressures;
+  const pals = p?.pallets || [];
+  /* Un rapport d'avant le journal n'a ni identité de palette ni
+     défauts comptés : rien à détailler de plus que les pressions. */
+  const rich = pals.some(x => x.sub || x.ggn || x.variety || x.boxes ||
+    Object.values(x.d || {}).some(v => v !== '' && v != null) || (x.w || []).some(v => v !== '' && v != null));
+  if (!pals.length || !rich) return '';
+  const rs = receptionStats(p, grid, 'reception');
+  const k = r.summary?.reception || { under: rs.underPct, light: rs.sampled ? rs.lightPct : null,
+                                      loss: rs.sampled ? rs.lossPct : null, checked: rs.checkedTotal, fruits: rs.fruitsTotal };
+  const bad = new Set(badPallets(r.header));
+  const defs = rs.defs;
+  /* La couleur suit le verdict des critères remplis (voir
+     receptionTones) ; l'état est aussi écrit, jamais porté par la
+     couleur seule. */
+  const tone = k.tone || {};
+  const kpi = (label, v, t) => `<div class="kpi${t === 'warn' || t === 'fail' ? ' ' + t : ''}"><span>${label}</span><b>${
+    v == null ? '—' : fmtPct(v) + ' %'}</b>${KPI_TONE[t] ? `<small>${KPI_TONE[t]}</small>` : ''}</div>`;
+  const producers = [...new Map(pals.filter(x => x.ggn || x.producer)
+    .map(x => [`${x.ggn}|${x.producer}`, x])).values()];
+
+  return `<div class="card pad" style="margin-top:12px">
+    <b style="font-size:14.5px">Indicateurs du lot</b>
+    <div class="kpis" style="margin-top:8px">
+      ${kpi('Sous-calibre', k.under, tone.under)}${kpi('Défauts légers', k.light, tone.light)}${kpi('Pertes', k.loss, tone.loss)}
+    </div>
+    ${k.checked ? `<p class="hint" style="margin:8px 0 0">Sur ${k.checked} fruits contrôlés${
+      k.fruits ? ` (${Number(k.fruits).toLocaleString('fr-FR')} fruits dans le lot)` : ''}. Chaque palette pèse son nombre de fruits.</p>` : ''}
+  </div>
+
+  <div class="card pad" style="margin-top:12px">
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+      <b style="font-size:14.5px">Détail par palette</b>
+      <span class="muted">${pals.length} palette${pals.length > 1 ? 's' : ''}${
+        bad.size ? ` · ${bad.size} problématique${bad.size > 1 ? 's' : ''}, surlignée${bad.size > 1 ? 's' : ''}` : ''}</span>
+    </div>
+    <div class="ptab-wrap"><table class="ptab">
+      <thead><tr><th>Palette</th><th>Variété</th><th class="num">Colis kg</th><th>Cal.</th><th>Cat.</th>
+        <th>Marque</th><th>GGN</th><th class="num">Colis</th><th class="num">Pression</th><th class="num">Contrôlés</th>
+        ${defs.map(t => `<th class="num">${esc(t.label)}</th>`).join('')}
+        <th class="num">Ext.</th><th class="num">Int.</th><th class="num">Pertes %</th>
+        <th class="num">Sous-poids</th><th>Poids (g)</th><th class="num">Sous-cal. %</th></tr></thead>
+      <tbody>${rs.rows.map(x => {
+        const pal = x.p, st = palletStats(pal);
+        return `<tr${bad.has(x.n) ? ' class="bad"' : ''}>
+          <td>${esc(x.n)}</td><td>${esc(pal.variety || '')}</td>
+          <td class="num">${pal.boxKg ? num2(pal.boxKg) : ''}</td><td>${esc(pal.cal || '')}</td><td>${esc(pal.cat || '')}</td>
+          <td>${esc(pal.brand || '')}</td><td>${esc(pal.ggn || '')}</td><td class="num">${pal.boxes ?? ''}</td>
+          <td class="num">${st ? fmtP(st.avg) : ''}</td><td class="num">${x.def.checked ?? ''}</td>
+          ${defs.map(t => `<td class="num">${x.def.counts[t.key] || ''}</td>`).join('')}
+          <td class="num">${x.def.ext || ''}</td><td class="num">${x.def.int || ''}</td>
+          <td class="num${x.def.loss ? ' lossv' : ''}">${x.def.checked ? fmtPct(x.def.lossPct) : ''}</td>
+          <td class="num${x.und.under ? ' lossv' : ''}">${x.und.weighed ? `${x.und.under}/${x.und.weighed}` : ''}</td>
+          <td>${x.und.weights.map(w => Math.round(w)).join(', ')}</td>
+          <td class="num">${x.und.pct == null ? '' : fmtPct(x.und.pct, 0)}</td></tr>`;
+      }).join('')}</tbody></table></div>
+    ${producers.length ? `<div class="muted" style="font-size:12px;margin-top:8px">${producers.map(x =>
+      `${x.ggn ? `GGN ${esc(x.ggn)}` : ''}${x.ggn && x.producer ? ' — ' : ''}${esc(x.producer || '')}`).join('<br>')}</div>` : ''}
+  </div>`;
+}
 
 /* Portée de la règle client appliquée. Les rapports d'avant la
    distinction par produit ne portaient que le conditionnement. */
@@ -425,6 +503,19 @@ async function duplicate(r) {
        et impossible à distinguer d'un vrai. */
     _draft: true, _draftAt: Date.now()
   };
+  /* « Mesures vierges » vaut aussi pour les palettes : leurs n°,
+     calibres et colis restent, pas leurs pressions, pesées ni
+     défauts — sans quoi la copie héritait des relevés de l'original. */
+  const pal = copy.header?.pressures?.pallets;
+  if (Array.isArray(pal)) {
+    for (const x of pal) {
+      x.v = (x.v || []).map(() => '');
+      x.w = (x.w || []).map(() => '');
+      x.d = {};
+      delete x.chk;
+    }
+  }
+  if (copy.header) { delete copy.header.bad_pallets; delete copy.header.bad_pallet; }
   await local.put('reports', copy);
   go(`#/report/${copy.id}/edit`);
 }
@@ -511,7 +602,8 @@ export function buildReportsXlsx(rows) {
   const head = ['N°','Date','Type','Groupe','Variété','Calibre','Origine(s)','Partenaire','Département',
                 'Commande','Id chargement','N° de lot','N° de BL','Catégorie','Conditionnement','Détail calibres','Qualité','Conservabilité','Évaluation',
                 '%NC','Étoiles','Palettes','Colis','Poids net','Température','Contrôleur','Remarques','Photos','Transporteur','N° de Voyage','Palettes problématiques','N° palettes problématiques','Pression moy.','Pression min','Pression max','Palettes mesurées',
-                'Référence pression','Palettes hors référence','Écart le plus grave'];
+                'Référence pression','Palettes hors référence','Écart le plus grave',
+                'Date de réception','N° de camion','% sous-calibre','% défauts légers','% pertes','Fruits contrôlés'];
   const main = rows.map(r => {
     const g = groupById(r.product_group_id), s = r.summary || {}, m = r.measures || {}, h = r.header || {};
     return [r.report_no || '', fmtDate(r.report_date), reportType(r.type).short,
@@ -521,8 +613,36 @@ export function buildReportsXlsx(rows) {
       r.inspector_name || '', (r.remarks || '').replace(/\n/g, ' '), r.photos?.length || 0,
       h.carrier || '', h.voyage || h.load_id || '',
       badPallets(h).length || '', badPallets(h).join(' '),
-      ...pressureCells(h, g)];
+      ...pressureCells(h, g),
+      h.arrival ? fmtWall(h.arrival) : '', h.truck || '',
+      num(s.reception?.under), num(s.reception?.light), num(s.reception?.loss), num(s.reception?.checked)];
   });
+
+  /* Troisième feuille : une ligne par palette reçue — ce que le
+     fournisseur voudra voir, et ce qu'on filtrera par GGN. */
+  const pallets = [];
+  for (const r of rows) {
+    if (r.type !== 'reception' || !r.header?.pressures?.pallets?.length) continue;
+    const g = groupById(r.product_group_id);
+    const rs = receptionStats(r.header.pressures, gridOf(r, g) || {}, 'reception');
+    const bad = new Set(badPallets(r.header));
+    if (!pallets.length) pallets.push(['N° rapport', 'Date', 'N° de lot', 'Fournisseur', 'N° palette', 'Sous-lot', 'Variété',
+      'Poids net colis (kg)', 'Calibre', 'Catégorie', 'Marque', 'GGN', 'Producteur', 'Origine', 'Colis', 'Pression moy.',
+      'Fruits contrôlés', 'Défauts (détail)', 'Défauts externes', 'Défauts internes', '% défauts légers', '% pertes',
+      'Fruits pesés', 'Sous-poids', 'Poids sous-calibrés (g)', '% sous-calibre', 'Problématique']);
+    for (const x of rs.rows) {
+      const pl = x.p, st = palletStats(pl);
+      pallets.push([r.report_no || '', fmtDate(r.report_date), r.header.lot || '', r.partner_name || '', x.n, pl.sub || '',
+        pl.variety || '', num(pl.boxKg), pl.cal || '', pl.cat || '', pl.brand || '', pl.ggn || '', pl.producer || '',
+        pl.origin ? countryName(pl.origin, 'fr') : '', num(pl.boxes), st ? Math.round(st.avg * 100) / 100 : '',
+        num(x.def.checked),
+        rs.defs.filter(t => x.def.counts[t.key]).map(t => `${t.label} ${x.def.counts[t.key]}`).join(', '),
+        x.def.ext, x.def.int,
+        x.def.checked ? Math.round(x.def.lightPct * 100) / 100 : '', x.def.checked ? Math.round(x.def.lossPct * 100) / 100 : '',
+        x.und.weighed || '', x.und.weighed ? x.und.under : '', x.und.weights.map(w => Math.round(w)).join(' '),
+        x.und.pct == null ? '' : Math.round(x.und.pct * 100) / 100, bad.has(x.n) ? 'oui' : '']);
+    }
+  }
 
   /* Deuxième feuille : une ligne par mesure, pour croiser les données
      dans un tableau croisé dynamique sans avoir à aplatir soi-même. */
@@ -541,7 +661,8 @@ export function buildReportsXlsx(rows) {
 
   return buildXlsx([
     { name: 'Rapports', rows: [head, ...main] },
-    { name: 'Mesures', rows: detail }
+    { name: 'Mesures', rows: detail },
+    ...(pallets.length ? [{ name: 'Palettes', rows: pallets }] : [])
   ]);
 }
 /* Une valeur non convertible sort en cellule VIDE, pas en « NaN » :
