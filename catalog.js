@@ -92,6 +92,26 @@ const AVOCAT = {
     tolerance: 10,
     /* Protocole pénétromètre : les deux joues de 5 fruits par palette. */
     pressure: { fruits: 5, sides: 2, ref: 13, unit: 'kg' },
+    /* Échelle de maturité de l'avocat, en kg au pénétromètre : c'est
+       l'échelle de la filière, pas un découpage arbitraire de la plage
+       de l'appareil. Elle remplit le stade de mûrissement à partir de
+       la moyenne du lot, et pèse sur la conservabilité pour les deux
+       derniers paliers seulement — un fruit « bon pour rayon » est ce
+       que le client attend, pas un défaut.
+       Réglable dans Réglages > Produits & critères > barème. */
+    verdict: {
+      ripeness: {
+        onlyOutsideRef: true,
+        bands: [
+          { min: 10,  stage: 'Dur',            fail: 0, warn: 0 },
+          { min: 2.2, stage: 'En mûrissement', fail: 0, warn: 0 },
+          { min: 1.1, stage: 'Bon pour rayon', fail: 0, warn: 0 },
+          { min: 0.7, stage: 'Prêt à manger',  fail: 0, warn: 1 },
+          { min: 0.4, stage: 'À consommer',    fail: 1, warn: 0 },
+          { min: 0,   stage: 'Surmûr',         fail: 2, warn: 0 }
+        ]
+      }
+    },
     /* Poids minimum par calibre, en grammes : sert à signaler les
        fruits sous-calibrés au contrôle production. Valeurs de départ
        tirées de la norme CEE-ONU FFV-42 — à remplacer par le barème

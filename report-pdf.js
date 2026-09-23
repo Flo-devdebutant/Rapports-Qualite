@@ -10,7 +10,7 @@
    ------------------------------------------------------------------ */
 
 import { PDF, PAGE, MARGIN, COLORS, textWidth } from './pdf.js';
-import { flatFields, fieldStatus, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
+import { flatFields, statusIn, savedContext, ripenessField, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { logoJpeg } from './logo.js';
 import { storage, currentUser } from './supa.js';
 import { local } from './store.js';
@@ -188,9 +188,22 @@ const TERMS = {
   'Non conforme':     { en:'Non-compliant', it:'Non conforme', es:'No conforme', nl:'Niet conform' }
 };
 
+/* Un terme du dictionnaire suivi de sa plage — « Prêt à manger
+   (0,6–2,5 kg) », tel qu'on le retouche dans les réglages. On traduit
+   le terme et on garde la plage (avec le point décimal en anglais) :
+   sans cela, le moindre libellé ajusté sortait en français au milieu
+   d'un PDF anglais. */
+function termOf(lang, s) {
+  if (TERMS[s]?.[lang]) return TERMS[s][lang];
+  const m = /^(.*?)\s*(\([^()]*\))\s*$/.exec(String(s));
+  if (!m || !TERMS[m[1]]?.[lang]) return null;
+  const range = lang === 'en' ? m[2].replace(/(\d),(\d)/g, '$1.$2') : m[2];
+  return `${TERMS[m[1]][lang]} ${range}`;
+}
+
 /* Traduit une chaîne venue de la base ; laisse passer ce qu'elle ne
    connaît pas (noms de variétés, calibres, texte libre). */
-const tr = (lang, s) => (lang === 'fr' || !s) ? s : (TERMS[s]?.[lang] || s);
+const tr = (lang, s) => (lang === 'fr' || !s) ? s : (termOf(lang, s) || s);
 
 /* Ordre de priorité pour un libellé venu des Réglages :
      1. la traduction saisie sur le critère ou la section ;
@@ -200,12 +213,17 @@ const tr = (lang, s) => (lang === 'fr' || !s) ? s : (TERMS[s]?.[lang] || s);
    dans le PDF, jamais vide et jamais approximatif. */
 const trLabel = (lang, label, i18n) => {
   if (lang === 'fr' || !label) return label;
-  return (i18n && i18n[lang]) || TERMS[label]?.[lang] || label;
+  return (i18n && i18n[lang]) || termOf(lang, label) || label;
 };
 
 /* Utilisé par l'éditeur de critères pour indiquer qu'un libellé est
    déjà traduit d'office. */
-export const builtinTranslation = (label) => TERMS[label] || null;
+export const builtinTranslation = (label) => {
+  if (TERMS[label]) return TERMS[label];
+  const out = {};
+  for (const l of ['en', 'it', 'es', 'nl']) { const t = termOf(l, label); if (!t) return null; out[l] = t; }
+  return out;
+};
 
 /* Valeurs de verdict traduites (le stockage reste en français). */
 const V = {
@@ -367,10 +385,13 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
     if (!bySection.has(fl.sectionLabel)) bySection.set(fl.sectionLabel, []);
     bySection.get(fl.sectionLabel).push(fl);
   }
+  /* Même lecture que le verdict : une dureté ou un stade que la
+     référence client a validés ne s'affichent pas en défaut. */
+  const judged = savedContext(s);
   for (const [secLabel, list] of bySection) {
     doc.subhead(trLabel(lang, secLabel, list[0]?.sectionI18n));
     for (const fl of list) {
-      const st = fieldStatus(fl, m[fl.key]);
+      const st = statusIn(judged, fl, m[fl.key]);
       const val = fl.type === 'bool'
         ? (m[fl.key] === true || m[fl.key] === 'true' ? t.conform : t.nonConform)
         : fl.type === 'choice'
@@ -383,7 +404,13 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
 
   /* -- Pressions et poids -- */
   const pStats = lotStats(h.pressures);
-  if (pStats) drawPressures(doc, h.pressures, pStats, t, lang, refSpec(h.pressures, group), pressureVerdict(h.pressures, group), s.ripeness?.stage);
+  /* Le stade déduit passe par la même traduction que la ligne
+     « Stade de mûrissement » du tableau : les deux doivent se lire
+     pareil sur la même page. */
+  const ripe = s.ripeness?.stage;
+  const ripeOpt = ripe && (ripenessField(group, report.type)?.options || []).find(o => o.v === ripe);
+  const ripeText = ripe ? trLabel(lang, ripe, ripeOpt?.i18n) : null;
+  if (pStats) drawPressures(doc, h.pressures, pStats, t, lang, refSpec(h.pressures, group), pressureVerdict(h.pressures, group), ripeText);
   const wStats = weightLotStats(h.pressures, group);
   if (wStats) drawWeights(doc, h.pressures, wStats, group, t, lang);
 
@@ -471,7 +498,7 @@ function drawPressures(doc, pressures, stats, t, lang, spec, pv, ripe) {
     /* La maturité déduite de la moyenne : c'est elle qui dit si le lot
        va tenir, indépendamment de l'écart à la référence. */
     if (ripe) {
-      doc.text(`${t.ripeness} ${tr(lang, ripe)}`, MARGIN, doc.y + 8, { size: 8.4 });
+      doc.text(`${t.ripeness} ${ripe}`, MARGIN, doc.y + 8, { size: 8.4 });
       doc.y += 11;
     }
     const scale = spec.mode === 'range'

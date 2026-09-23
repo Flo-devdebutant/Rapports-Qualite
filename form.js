@@ -9,7 +9,8 @@
 
 import { state, shell, groupById, go, back } from './app.js';
 import { local, queue, sync, forgetPhotos } from './store.js';
-import { flatFields, fieldStatus, computeSummary, applyComputed, fieldRole, PRESSURE_ROLES,
+import { flatFields, computeSummary, applyComputed, fieldRole, PRESSURE_ROLES,
+         judgeContext, statusIn, autoFilled,
          VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { COUNTRIES_FR, countryName } from './countries.js';
 import { pressureConfig, palletStats, lotStats, hasPressures, fmtP,
@@ -284,21 +285,30 @@ function sectionHtml(sec) {
   const fields = (sec.fields || []).filter(f => fieldLive(sec, f, draft.type));
   if (!fields.length) return '';
   const done = fields.filter(f => draft.measures[f.key] !== undefined && draft.measures[f.key] !== '').length;
+  const ctx = formCtx();
   return `<details class="sec"${done ? ' open' : ''} data-sec="${esc(sec.id)}">
     <summary>${esc(sec.label)} <span class="count">${done}/${fields.length}</span> ${caret()}</summary>
-    <div class="body crits">${fields.map(f => fieldHtml(f)).join('')}</div>
+    <div class="body crits">${fields.map(f => fieldHtml(f, ctx)).join('')}</div>
   </details>`;
 }
 
-function fieldHtml(f) {
+/* Contexte de jugement du rapport en cours : le même que celui du
+   verdict. Une pastille calculée à part pouvait afficher un défaut que
+   le verdict, lui, ne comptait pas. */
+const formCtx = (group = groupById(draft.product_group_id)) =>
+  judgeContext(group, draft.header.pressures, draft.type);
+
+function fieldHtml(f, ctx = formCtx()) {
   const v = draft.measures[f.key];
-  const st = fieldStatus(f, v);
+  const st = statusIn(ctx, f, v);
   const dot = `<span class="dot ${st || 'none'}" data-dot="${esc(f.key)}"></span>`;
   /* Dureté et stade de mûrissement se déduisent du contrôle par
      palette : on le dit, et on verrouille la saisie tant que des
      pressions sont relevées. Un champ qu'on peut taper mais qui se
-     réécrit à la mesure suivante est pire qu'un champ fermé. */
-  const auto = PRESSURE_ROLES.includes(fieldRole(f)) && !!lotStats(draft.header.pressures);
+     réécrit à la mesure suivante est pire qu'un champ fermé. Le stade
+     n'est verrouillé que si une échelle permet de le déduire : sinon
+     il reste à saisir. */
+  const auto = autoFilled(groupById(draft.product_group_id), f, draft.header.pressures, draft.type);
   const hint = auto ? '<small>Repris du contrôle par palette</small>'
                     : (f.hint ? `<small>${esc(f.hint)}</small>` : '');
   const label = `<span class="lb">${esc(f.label)}${f.unit && f.type !== 'choice' && f.type !== 'bool' ? ` <span class="muted">(${esc(f.unit)})</span>` : ''}${hint}</span>`;
@@ -613,10 +623,11 @@ function syncCalibreTotals() {
 function refresh(changedKey) {
   const group = groupById(draft.product_group_id);
   draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
+  const ctx = formCtx(group);
 
   for (const f of flatFields(group, draft.type)) {
     const dot = document.querySelector(`[data-dot="${CSS.escape(f.key)}"]`);
-    if (dot) dot.className = 'dot ' + (fieldStatus(f, draft.measures[f.key]) || 'none');
+    if (dot) dot.className = 'dot ' + (statusIn(ctx, f, draft.measures[f.key]) || 'none');
     if (f.computed && f.key !== changedKey) {
       const inp = document.querySelector(`.crit[data-key="${CSS.escape(f.key)}"] input`);
       if (inp && !draft.measures['_manual_' + f.key]) inp.value = draft.measures[f.key] ?? '';
@@ -644,11 +655,12 @@ function refresh(changedKey) {
    relevé, et l'inspecteur saisit dix mesures d'affilée. */
 function syncPressureFields() {
   const group = groupById(draft.product_group_id);
-  const auto = !!lotStats(draft.header.pressures);
+  const ctx = formCtx(group);
   for (const f of flatFields(group, draft.type)) {
     if (!PRESSURE_ROLES.includes(fieldRole(f))) continue;
     const row = document.querySelector(`.crit[data-key="${CSS.escape(f.key)}"]`);
     if (!row) continue;
+    const auto = autoFilled(group, f, draft.header.pressures, draft.type);
     const el = row.querySelector('input,select');
     const v = draft.measures[f.key];
     if (el) {
@@ -656,12 +668,15 @@ function syncPressureFields() {
       if (el.tagName === 'SELECT') el.disabled = auto;
       else { el.readOnly = auto; el.toggleAttribute('data-auto', auto); }
     }
+    /* L'aide d'origine du critère revient quand le relevé est vidé :
+       « Repris du contrôle par palette » sous un champ redevenu libre
+       mentirait. */
     const small = row.querySelector('.lb small');
-    if (auto && small) small.textContent = 'Repris du contrôle par palette';
-    else if (auto && !small) row.querySelector('.lb')
-      ?.insertAdjacentHTML('beforeend', '<small>Repris du contrôle par palette</small>');
+    const text = auto ? 'Repris du contrôle par palette' : (f.hint || '');
+    if (small) { if (text) small.textContent = text; else small.remove(); }
+    else if (text) row.querySelector('.lb')?.insertAdjacentHTML('beforeend', `<small>${esc(text)}</small>`);
     const dot = row.querySelector('[data-dot]');
-    if (dot) dot.className = 'dot ' + (fieldStatus(f, v) || 'none');
+    if (dot) dot.className = 'dot ' + (statusIn(ctx, f, v) || 'none');
   }
   refreshCounts(group);
   paintBadPick();          // les palettes contrôlées viennent d'évoluer
@@ -915,7 +930,15 @@ function pressures() {
      à la main » — une valeur que personne n'avait saisie, présentée
      comme une décision humaine. */
   if (p.mode === 'target' && p.ref == null && p.refSource !== 'manuel') p.ref = cfg.ref;
-  applyClientRef();
+  /* Un rapport déjà enregistré garde la référence avec laquelle il a
+     été jugé. La lui réappliquer à chaque ouverture, c'était, pour une
+     simple correction, lui imposer en silence le carnet d'aujourd'hui —
+     et, si le client avait été renommé depuis, le ramener à la
+     référence produit : un rapport conforme devenait non conforme sans
+     que personne ait touché aux pressions. Changer de client ou de
+     conditionnement la réapplique ; un carnet qui a changé depuis est
+     signalé, avec un bouton pour l'adopter. */
+  if (draft._draft) applyClientRef();
   return p;
 }
 const slots = (p) => (p.fruits || 5) * (p.sides || 2);
@@ -978,8 +1001,14 @@ function refScopeText(hit) {
 
 function refSourceHtml(p) {
   const hit = clientSpec();
-  if (p.refSource === 'client')
-    return `D'après le carnet — ${esc(p.refClient || '')}${p.refScope ? ` · ${esc(p.refScope)}` : ''}.`;
+  if (p.refSource === 'client') {
+    const base = `D'après le carnet — ${esc(p.refClient || '')}${p.refScope ? ` · ${esc(p.refScope)}` : ''}.`;
+    const now = hit ? refText({ ...hit, unit: p.unit }) : '';
+    const was = refText(spec());
+    return base + (hit && now !== was
+      ? ` Le carnet indique aujourd'hui ${esc(now)}. <button type="button" class="linkish" id="prRefBack">L'appliquer à ce rapport</button>`
+      : '');
+  }
   /* Quand une référence client existe, `applyClientRef` l'a déjà posée
      avant ce rendu, sauf si le contrôleur l'a écartée à la main : le
      seul libellé atteignable est donc « Reprendre celle du client ».

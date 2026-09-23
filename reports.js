@@ -2,7 +2,7 @@
 
 import { state, shell, groupById, go, back, syncBadge } from './app.js';
 import { local, queue, sync } from './store.js';
-import { flatFields, fieldStatus, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
+import { flatFields, statusIn, savedContext, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { $, $$, esc, icon, toast, sheet, confirmSheet, stars, fmtDate, debounce, shareFile, download } from './ui.js';
 import { buildReportPDF, reportFilename, LANGS } from './report-pdf.js';
 import { buildXlsx } from './xlsx.js';
@@ -208,6 +208,9 @@ export async function renderReportView(id) {
 
   const grid = gridOf(r, g);
   const fields = flatFields(grid || {}, r.type);
+  /* Pastilles lues comme le verdict les a comptées : une dureté ou un
+     stade validés par la référence client ne s'affichent pas en défaut. */
+  const judged = savedContext(s);
   const bySection = new Map();
   for (const f of fields) {
     if (m[f.key] === '' || m[f.key] == null) continue;
@@ -253,7 +256,7 @@ export async function renderReportView(id) {
     ${[...bySection].map(([label, list]) => `
       <details class="sec" open style="margin-top:12px"><summary>${esc(label)} <span class="caret">▾</span></summary>
         <div class="body">${list.map(f => {
-          const st = fieldStatus(f, m[f.key]);
+          const st = statusIn(judged, f, m[f.key]);
           const val = f.type === 'bool' ? (isYes(m[f.key]) ? 'Conforme' : 'Non conforme')
                     : `${fmtVal(m[f.key])}${f.unit && f.type !== 'choice' ? ' ' + f.unit : ''}`;
           return kv(f.label, val, st);
@@ -526,12 +529,13 @@ export function buildReportsXlsx(rows) {
   const detail = [['N° rapport','Date','Partenaire','Groupe','Section','Critère','Valeur','Unité','Statut']];
   for (const r of rows) {
     const g = groupById(r.product_group_id);
+    const judged = savedContext(r.summary);
     for (const f of flatFields(gridOf(r, g) || {})) {
       const v = r.measures?.[f.key];
       if (v === '' || v == null) continue;
       detail.push([r.report_no || '', fmtDate(r.report_date), r.partner_name || '', g?.name || '',
         f.sectionLabel, f.label, f.type === 'bool' ? (isYes(v) ? 'Conforme' : 'Non conforme') : v,
-        f.unit || '', fieldStatus(f, v) || '']);
+        f.unit || '', statusIn(judged, f, v) || '']);
     }
   }
 

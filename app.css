@@ -217,6 +217,11 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
 .opt-row{display:flex;align-items:center;gap:7px;margin-bottom:7px}
 .opt-row input{flex:2 1 110px;min-height:40px;padding:0 10px;font-size:15px}
 .opt-row select{flex:1 1 130px;min-height:40px;padding:0 28px 0 9px;font-size:14px}
+/* Case à cocher accompagnée d'une explication : la case garde sa taille
+   native, le texte prend le reste et l'ensemble reste cliquable. */
+.opt-row input[type=checkbox]{flex:0 0 auto;width:20px;height:20px;min-height:0;margin:0}
+.opt-row > span{flex:1;font-size:12.5px;line-height:1.35;cursor:pointer}
+.opt-row > span small{display:block;color:var(--ink-3);font-size:11px;margin-top:3px}
 
 /* L'essai en direct : on tape une valeur, on lit le verdict. */
 .try-box{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:13px;
@@ -287,7 +292,8 @@ select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns=
   padding:9px 0;border-top:1px solid var(--line-2);font-size:12.5px
 }
 .band-row:first-child{border-top:0}
-.band-row .bl{display:flex;align-items:center;gap:5px;color:var(--ink-2)}
+.band-row .bst{flex:1 1 150px;min-width:0;font-weight:600;color:var(--ink)}
+.band-row .bl{display:flex;align-items:center;gap:5px;color:var(--ink-2);flex:0 0 auto}
 .band-row .bl input{width:62px;padding:7px 8px;font-size:14px;text-align:right}
 .band-row select{flex:1 1 130px;min-width:0;padding:7px 8px;font-size:13px}
 .band-row .bw{display:flex;gap:8px;flex:1 1 100%}

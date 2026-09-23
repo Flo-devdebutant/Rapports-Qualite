@@ -125,9 +125,16 @@ export const DEFAULT_VERDICT = {
              majeur:   { fail: 1, warn: 0 },
              mineur:   { fail: 0, warn: 1 } },
   /* Un lot déjà mûr ne tiendra pas, même impeccable par ailleurs. Les
-     bandes se règlent sur la moyenne du lot au pénétromètre ; vides,
-     elles se déduisent des choix du critère de mûrissement. */
-  ripeness: { bands: [] },
+     paliers se lisent sur la moyenne du lot au pénétromètre. Quand les
+     libellés du stade portent leur plage (« Prêt à manger (0,6–2,5 kg) »),
+     ce sont EUX qui donnent les seuils ; les paliers enregistrés ne
+     fixent alors que leur poids sur la conservabilité. */
+  ripeness: { bands: [],
+              /* Quand le lot respecte la référence du client, sa
+                 maturité est celle qu'il a commandée : on ne la compte
+                 pas comme un défaut. Décochez pour juger la maturité
+                 dans l'absolu, référence ou pas. */
+              onlyOutsideRef: true },
   eval:     { acceptable: 0.7 }   // part de la tolérance à partir de laquelle c'est « Acceptable »
 };
 
@@ -140,26 +147,61 @@ export function verdictCfg(group) {
     press:    { critique: merge(DEFAULT_VERDICT.press.critique, c.press?.critique),
                 majeur:   merge(DEFAULT_VERDICT.press.majeur,   c.press?.majeur),
                 mineur:   merge(DEFAULT_VERDICT.press.mineur,   c.press?.mineur) },
-    ripeness: { bands: Array.isArray(c.ripeness?.bands) ? c.ripeness.bands : [] },
+    ripeness: { bands: Array.isArray(c.ripeness?.bands) ? c.ripeness.bands : [],
+                onlyOutsideRef: c.ripeness?.onlyOutsideRef !== false },
     eval:     merge(DEFAULT_VERDICT.eval, c.eval)
   };
 }
 
-/* Bandes de maturité par défaut : on répartit l'échelle du pénétromètre
-   sur les choix du critère de mûrissement, du plus ferme au plus mûr,
-   et les deux derniers pèsent sur la conservabilité. C'est un point de
-   départ raisonnable, que l'administrateur ajuste ensuite. */
-export function autoBands(field, max = 13) {
-  const opts = (field?.options || []).map(o => o.v).filter(Boolean);
-  if (!opts.length) return [];
-  const step = max / opts.length;
-  return opts.map((v, i) => {
-    const min = Math.round((max - step * (i + 1)) * 10) / 10;
-    const rang = opts.length - 1 - i;           // 0 = le plus mûr
-    return { min: i === opts.length - 1 ? 0 : min, stage: v,
-             fail: rang === 0 ? 2 : rang === 1 ? 1 : 0,
-             warn: rang === 2 ? 1 : 0 };
+/* La partie d'un libellé qui exprime une pression : la parenthèse
+   finale, ou à défaut le libellé entier s'il contient une unité ou un
+   comparateur. « Stade 2 » n'est PAS une pression de 2 kg — lire ce
+   chiffre-là, ce serait recommencer à inventer une échelle. */
+const PRESS_HINT = /[<>\u2264\u2265]|\d\s*(?:kg|kgf|lbs?|lbf|n)\b|moins de|plus de/i;
+function pressurePart(label) {
+  const s = String(label || '');
+  const paren = s.match(/\(([^()]*)\)\s*$/);
+  if (paren && /\d/.test(paren[1])) return paren[1];
+  return PRESS_HINT.test(s) ? s : null;
+}
+
+/* Les libellés du stade de mûrissement portent très souvent l'échelle
+   eux-mêmes — « Bon pour rayon (1,1–2,1 kg) », « Surmûr (< 0,5 kg) ».
+   C'est LA bonne source : elle vient du métier, pas d'un calcul. On en
+   extrait le seuil bas de chaque palier.
+     « > 10 kg »   → 10
+     « 2,2–10 kg » → 2,2
+     « < 0,5 kg »  → 0   (borne haute : c'est le dernier palier) */
+export function bandsFromLabels(field) {
+  const opts = (field?.options || []).filter(o => o.v);
+  if (!opts.length) return null;
+  const out = [];
+  for (const o of opts) {
+    const part = pressurePart(o.v);
+    const nums = part && part.replace(/(\d),(\d)/g, '$1.$2').match(/\d+(?:\.\d+)?/g);
+    if (!nums) return null;                      // un seul libellé muet : on renonce
+    const borneHaute = /[<\u2264]|moins/i.test(part);
+    out.push({ stage: o.v, min: borneHaute ? 0 : Math.min(...nums.map(Number)) });
+  }
+  /* Sans seuils distincts, l'échelle ne veut rien dire. */
+  if (new Set(out.map(b => b.min)).size < out.length) return null;
+  out.sort((a, b) => b.min - a.min);
+  /* L'impact sur la conservabilité suit le rang : les deux paliers les
+     plus mûrs pèsent, les autres non. Réglable ensuite. */
+  return out.map((b, i) => {
+    const rang = out.length - 1 - i;             // 0 = le plus mûr
+    return { ...b, fail: rang === 0 ? 2 : rang === 1 ? 1 : 0, warn: rang === 2 ? 1 : 0 };
   });
+}
+
+/* Dernier recours, quand aucun libellé ne porte de chiffre : AUCUNE
+   bande. Répartir l'échelle du pénétromètre à parts égales entre les
+   choix n'a aucun fondement — c'est ce qui faisait écrire « Surmûr »
+   sur un lot à 1,44 kg parfaitement conforme au cahier des charges du
+   client. Mieux vaut ne rien conclure que conclure faux : le stade
+   reste vide, et l'administrateur pose l'échelle lui-même. */
+export function autoBands(field) {
+  return bandsFromLabels(field) || [];
 }
 
 /* Bande correspondant à une moyenne de lot. */
@@ -169,12 +211,109 @@ export function ripenessBand(avg, bands) {
   return sorted.find(b => avg >= Number(b.min)) || sorted[sorted.length - 1] || null;
 }
 
-/* Bandes utilisables : celles réglées, sinon celles déduites. */
+/* Nom d'un stade sans sa plage, pour reconnaître « Prêt à manger » dans
+   « Prêt à manger (0,6–2,5 kg) » : un libellé retouché dans les réglages
+   ne doit pas couper le lien avec son palier. */
+export const stageBase = (s) => String(s || '')
+  .replace(/\([^()]*\)/g, ' ')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/\s+/g, ' ').trim();
+const sameStage = (a, b) => a === b || (!!stageBase(a) && stageBase(a) === stageBase(b));
+
+/* Le critère que le relevé de pressions renseigne : le premier choix
+   dans une liste qui porte le rôle « stade de mûrissement ». */
+export function ripenessField(group, type) {
+  return flatFields(group, type).find(x => fieldRole(x) === 'ripeness' && x.type === 'choice') || null;
+}
+
+/* Paliers utilisables, TOUJOURS exprimés dans les choix actuels du
+   critère — jamais un stade qui n'existe plus dans la liste.
+     · Libellés chiffrés : les seuils viennent des libellés, qui sont
+       imprimés sur le rapport. Un seuil pris ailleurs finirait par
+       écrire « Bon pour rayon (2,5–5 kg) » sous une moyenne de 1,4 kg.
+       Le barème n'apporte que le poids de chaque palier.
+     · Libellés sans chiffres : les seuils sont ceux du barème. */
 export function ripenessBands(group, type) {
+  const f = ripenessField(group, type);
+  if (!f) return [];
+  const saved = verdictCfg(group).ripeness.bands;
+  const pick = (stage) => saved.find(x => x.stage === stage) || saved.find(x => sameStage(x.stage, stage));
+
+  const fromLabels = bandsFromLabels(f);
+  if (fromLabels) {
+    return fromLabels.map(b => {
+      const s = pick(b.stage);
+      return s ? { ...b, fail: Number(s.fail) || 0, warn: Number(s.warn) || 0 } : b;
+    });
+  }
+
+  const labels = (f.options || []).map(o => o.v).filter(Boolean);
+  const out = [];
+  for (const b of saved) {
+    const stage = labels.find(l => l === b.stage) || labels.find(l => sameStage(l, b.stage));
+    const min = Number(b.min);
+    if (!stage || b.min === '' || b.min == null || !isFinite(min)) continue;
+    if (out.some(x => x.stage === stage)) continue;
+    out.push({ min, stage, fail: Number(b.fail) || 0, warn: Number(b.warn) || 0 });
+  }
+  return out.sort((a, b) => b.min - a.min);
+}
+
+/* Ce champ est-il le résumé du relevé de pressions ? Les trois duretés
+   toujours (si ce sont des mesures chiffrées) ; le stade seulement
+   quand une échelle permet de le déduire — sinon il reste à saisir, et
+   le verrouiller laisserait une case vide que personne ne peut remplir. */
+function derivedField(group, f, type) {
+  const role = fieldRole(f);
+  if (role === 'firmMin' || role === 'firmMax' || role === 'firmAvg') return f.type === 'num';
+  if (role !== 'ripeness') return false;
+  const rf = ripenessField(group, type);
+  return !!rf && rf.key === f.key && ripenessBands(group, type).length > 0;
+}
+
+export function autoFilled(group, f, pressures, type) {
+  return !!lotStats(pressures) && derivedField(group, f, type);
+}
+
+/* ------------------------------------------------------------------
+   Contexte de jugement d'un rapport.
+   Dureté et maturité déduites des pressions sont DÉCRITES, pas jugées,
+   quand le lot respecte la référence (celle du client, ou à défaut
+   celle du produit) : c'est le cahier des charges qui dit ce que la
+   marchandise doit être, et il la déclare conforme. Un lot à 1,4 kg
+   livré à un client qui demande 1 à 2 kg est exactement ce qu'il a
+   commandé — le compter comme un défaut parce qu'il est mûr, c'est
+   reprocher au lot d'être conforme.
+   Ce contexte sert au calcul ET à l'affichage : sans lui, la saisie,
+   la fiche, le PDF et l'Excel recalculaient chaque pastille dans
+   l'absolu, et la ligne « Stade de mûrissement » s'affichait en défaut
+   sous un verdict qui ne la comptait pas.
+   ------------------------------------------------------------------ */
+export function judgeContext(group, pressures, type) {
   const cfg = verdictCfg(group);
-  if (cfg.ripeness.bands.length) return cfg.ripeness.bands;
-  const f = flatFields(group, type).find(x => fieldRole(x) === 'ripeness');
-  return autoBands(f);
+  const lot = lotStats(pressures);
+  const pv = pressureVerdict(pressures, group);
+  /* « Respecter » la référence, c'est être DANS la plage (ou dans la
+     zone conforme autour de la cible) — pas dans le point de
+     débordement toléré : un lot à 0,4 kg pour une plage de 1 à 2 kg
+     passe la tolérance, mais son « Surmûr » doit rester visible. */
+  const inRef = !!(pv && pv.lot && pv.lot.level === 'ok' && !pv.lot.tol);
+  const judged = !lot || !inRef || !cfg.ripeness.onlyOutsideRef;
+  const descriptive = new Set(judged ? [] :
+    flatFields(group, type).filter(f => derivedField(group, f, type)).map(f => f.key));
+  return { cfg, lot, pv, inRef, judged, descriptive };
+}
+
+/* Même contexte, relu dans un rapport enregistré : la liste des champs
+   décrits est figée dans son résumé, comme le reste du verdict. Un
+   rapport calculé avant cette règle n'en porte pas — il s'affiche tel
+   qu'il a été jugé. */
+export const savedContext = (summary) => ({ descriptive: new Set(summary?.descriptive || []) });
+
+/* Statut d'un critère DANS un rapport donné. */
+export function statusIn(ctx, field, raw) {
+  const st = fieldStatus(field, raw);
+  return st && ctx?.descriptive?.has(field.key) ? 'ok' : st;
 }
 
 /* Champs notés d'un groupe, aplatis avec leur section.
@@ -198,15 +337,20 @@ export function flatFields(group, type) {
 export function computeSummary(group, measures, pressures, type) {
   const fields = flatFields(group, type);
   const tolerance = Number(group?.config?.tolerance ?? 10);
-  const cfg = verdictCfg(group);
   const bands = ripenessBands(group, type);
-  const lot = lotStats(pressures);
+
+  /* Les pressions se jugent en premier : leur verdict décide si la
+     dureté et la maturité déduites sont notées ou seulement décrites
+     (voir judgeContext). Une valeur décrite compte comme conforme :
+     le cahier des charges l'a validée. */
+  const ctx = judgeContext(group, pressures, type);
+  const { cfg, lot, pv } = ctx;
 
   let fails = 0, warns = 0, oks = 0, critical = 0;
   const flagged = [];
 
   for (const f of fields) {
-    const st = fieldStatus(f, measures[f.key]);
+    const st = statusIn(ctx, f, measures[f.key]);
     if (!st) continue;
     if (st === 'ok') { oks++; continue; }
     if (st === 'warn') warns++;
@@ -218,7 +362,6 @@ export function computeSummary(group, measures, pressures, type) {
      noté : une palette dont la moyenne s'écarte de la référence est un
      défaut mesuré, pas une annexe. Seules les moyennes par palette
      sont jugées — un fruit isolé ne fait pas une non-conformité. */
-  const pv = pressureVerdict(pressures, group);
   if (pv) {
     for (const row of pv.rows) {
       const lvl = row.sev.level;
@@ -286,7 +429,7 @@ export function computeSummary(group, measures, pressures, type) {
   let sFail = 0, sWarn = 0;
   const shelfFields = fields.filter(f => SHELF_ROLES.includes(fieldRole(f)));
   for (const f of shelfFields) {
-    const st = fieldStatus(f, measures[f.key]);
+    const st = statusIn(ctx, f, measures[f.key]);
     if (st === 'fail') sFail++; else if (st === 'warn') sWarn++;
   }
   if (pv) {
@@ -298,14 +441,20 @@ export function computeSummary(group, measures, pressures, type) {
     }
   }
   const band = ripenessBand(lot?.avg, bands);
-  if (band) { sFail += Number(band.fail) || 0; sWarn += Number(band.warn) || 0; }
+  /* Même règle pour le palier de maturité : il ne pèse que si le lot
+     s'écarte de ce que le client a demandé, ou qu'aucune référence
+     n'est posée. */
+  if (band && ctx.judged) { sFail += Number(band.fail) || 0; sWarn += Number(band.warn) || 0; }
 
   /* Sans aucun critère de tenue renseigné, sans pression relevée et
      sans maturité connue, on ne sait RIEN de la conservabilité :
      annoncer « Élevée » sur cette base, c'est signer une promesse au
      client à partir d'une page blanche. On laisse la case vide. */
-  const shelfKnown = shelfFields.some(f => fieldStatus(f, measures[f.key]) != null)
+  const shelfKnown = shelfFields.some(f => statusIn(ctx, f, measures[f.key]) != null)
     || !!pv || !!band;
+  /* Un lot conforme à la référence a une conservabilité connue : celle
+     que le client a commandée. On ne la dégrade pas, on ne la gonfle
+     pas non plus. */
   const shelf = !shelfKnown ? null
     : sFail >= S.lowFails ? 'Minimale'
     : (sFail >= S.midFails || sWarn >= S.midWarns) ? 'Moyenne' : 'Élevée';
@@ -341,6 +490,9 @@ export function computeSummary(group, measures, pressures, type) {
     nc: nc == null ? null : Math.round(nc * 100) / 100,
     tolerance, fails, warns, oks, critical, flagged,
     ripeness: band ? { stage: band.stage, avg: lot.avg } : null,
+    /* Champs décrits sans être jugés, figés avec le verdict : la fiche,
+       le PDF et l'Excel les affichent comme le calcul les a comptés. */
+    descriptive: [...ctx.descriptive],
     pressure: pv ? { worst: pv.worst, count: pv.count, ref: pv.spec } : null
   };
 }
@@ -368,15 +520,15 @@ export function applyComputed(group, measures, pressures, type) {
      une valeur concurrente, c'est la même, calculée. */
   const lot = lotStats(pressures);
   if (lot) {
-    const bands = ripenessBands(group, type);
-    const band = ripenessBand(lot.avg, bands);
+    const band = ripenessBand(lot.avg, ripenessBands(group, type));
     for (const f of flatFields(group, type)) {
+      if (!derivedField(group, f, type)) continue;
       const role = fieldRole(f);
       if (role === 'firmMin')  out[f.key] = round2(lot.min);
       if (role === 'firmMax')  out[f.key] = round2(lot.max);
       if (role === 'firmAvg')  out[f.key] = round2(lot.avg);
-      if (role === 'ripeness' && band?.stage) out[f.key] = band.stage;
-      if (PRESSURE_ROLES.includes(role)) delete out['_manual_' + f.key];
+      if (role === 'ripeness' && band) out[f.key] = band.stage;
+      delete out['_manual_' + f.key];
     }
   }
 

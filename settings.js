@@ -5,7 +5,7 @@ import { local, queue, sync, pendingCount } from './store.js';
 import { db, auth } from './supa.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
 import { fieldStatus, FIELD_ROLES, fieldRole, effSeverity, flatFields,
-         verdictCfg, ripenessBands } from './verdict.js';
+         verdictCfg, ripenessBands, ripenessField, bandsFromLabels } from './verdict.js';
 import { allDrafts } from './form.js';
 import { LANGS, builtinTranslation } from './report-pdf.js';
 import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS, LIMITS, clampP } from './pressure.js';
@@ -611,10 +611,36 @@ function verdictSummary(g) {
          `${bands ? `${bands} paliers de maturité` : 'aucun palier de maturité'}.`;
 }
 
+/* Barème livré pour ce produit, s'il existe : « revenir au barème par
+   défaut » doit rendre l'échelle de maturité de l'avocat, pas l'effacer
+   — sans elle, le stade ne se remplit plus. */
+function shippedVerdict(g) {
+  const d = DEFAULT_GROUPS.find(x => x.id === g.id)?.config?.verdict;
+  return d ? structuredClone(d) : null;
+}
+
 function editVerdict(g, after) {
   const c = verdictCfg(g);
-  const ripeField = flatFields(g).find(f => fieldRole(f) === 'ripeness');
-  let bands = structuredClone(ripenessBands(g));
+  const ripeField = ripenessField(g);
+  const unit = pressureConfig(g).unit;
+  /* Deux façons de poser l'échelle :
+       · les libellés du critère portent leur plage (« Prêt à manger
+         (0,6–2,5 kg) ») : les seuils y sont lus, et c'est là qu'on les
+         change — deux sources de chiffres finiraient par se contredire
+         sur le même rapport ;
+       · les libellés sont nus (« Prêt à manger ») : on saisit ici la
+         pression à partir de laquelle chaque stade s'applique.
+     Dans les deux cas, une ligne par choix de la liste : un palier ne
+     peut plus désigner un stade qui n'existe pas. */
+  const fromLabels = !!(ripeField && bandsFromLabels(ripeField));
+  const live = ripenessBands(g);
+  const rows = !ripeField ? []
+    : fromLabels
+      ? live.map(b => ({ ...b }))
+      : (ripeField.options || []).filter(o => o.v).map(o => {
+          const b = live.find(x => x.stage === o.v);
+          return { stage: o.v, min: b ? b.min : '', fail: b ? b.fail : 0, warn: b ? b.warn : 0 };
+        });
 
   const num = (id, v, step = 1) =>
     `<input type="number" id="${id}" min="0" step="${step}" value="${v}">`;
@@ -669,12 +695,22 @@ function editVerdict(g, after) {
     <div class="scale-box" style="margin-top:14px">
       <h4>Maturité du lot, d'après la moyenne des pressions</h4>
       ${ripeField
-        ? `<p class="hint" style="margin:0 0 8px">Remplit « ${esc(ripeField.label)} » tout seul,
-             et pèse sur la conservabilité. De la plus ferme à la plus mûre.</p>
+        ? `<p class="hint" style="margin:0 0 8px">Remplit « ${esc(ripeField.label)} » tout seul
+             et pèse sur la conservabilité. ${fromLabels
+               ? `Les seuils sont lus dans les choix du critère : pour les changer, modifiez
+                  ces choix (critère « ${esc(ripeField.label)} »). Réglez ici le poids de chaque stade.`
+               : `Indiquez la pression moyenne à partir de laquelle chaque stade s'applique.
+                  Un stade laissé vide n'est jamais déduit ; tout vide, le stade se saisit à la main.`}</p>
+           <label class="opt-row" style="margin:0 0 10px">
+             <input type="checkbox" id="ripeOnly" ${c.ripeness.onlyOutsideRef ? 'checked' : ''}>
+             <span>Ne pas compter la maturité comme un défaut quand le lot
+               respecte la référence de pression<small>Celle du client, ou à défaut celle
+               du produit. Un lot livré à la fermeté demandée est conforme, même s'il est
+               mûr : c'est ce que le client a commandé.</small></span></label>
            <div id="bandRows"></div>`
-        : `<p class="hint" style="margin:0">Aucun critère ne porte le rôle
-             « Stade de mûrissement » dans cette grille : réglez-le sur un critère de type
-             « choix dans une liste » pour activer ce palier.</p>`}
+        : `<p class="hint" style="margin:0">Aucun critère « choix dans une liste » ne porte le
+             rôle « Stade de mûrissement » dans cette grille : donnez-lui ce rôle pour que le
+             stade se déduise des pressions.</p>`}
     </div>
 
     <div class="btn-row" style="margin-top:16px">
@@ -688,23 +724,23 @@ function editVerdict(g, after) {
         const paintBands = () => {
           const box = $$$('#bandRows');
           if (!box) return;
-          const opts = (ripeField?.options || []).map(o => o.v);
-          box.innerHTML = bands.map((b, i) => `
+          box.innerHTML = rows.map((b, i) => `
             <div class="band-row" data-b="${i}">
-              <span class="bl">à partir de <input type="number" step="0.1" min="${LIMITS.min}"
-                max="${LIMITS.max}" data-bm value="${b.min ?? 0}"> ${esc(pressureConfig(g).unit)}</span>
-              <select data-bs>${opts.map(o =>
-                `<option${o === b.stage ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>
-              <span class="bw">${'' /* impact conservabilité */}
-                <label>déf. <input type="number" min="0" step="1" data-bf value="${b.fail ?? 0}"></label>
-                <label>surv. <input type="number" min="0" step="1" data-bw value="${b.warn ?? 0}"></label></span>
-            </div>`).join('') || '<p class="muted" style="margin:0">Aucun palier.</p>';
+              <span class="bst">${esc(b.stage)}</span>
+              <span class="bl">${fromLabels
+                ? `dès ${esc(String(Math.round(Number(b.min) * 100) / 100).replace('.', ','))} ${esc(unit)}`
+                : `dès <input type="number" step="0.1" min="${LIMITS.min}" max="${LIMITS.max}"
+                     data-bm value="${b.min === '' || b.min == null ? '' : b.min}" placeholder="—"> ${esc(unit)}`}</span>
+              <span class="bw">
+                <label>défauts <input type="number" min="0" step="1" data-bf value="${b.fail ?? 0}"></label>
+                <label>à surveiller <input type="number" min="0" step="1" data-bw value="${b.warn ?? 0}"></label></span>
+            </div>`).join('') || '<p class="muted" style="margin:0">Aucun choix dans ce critère.</p>';
           box.querySelectorAll('.band-row').forEach(row => {
             const i = +row.dataset.b;
-            row.querySelector('[data-bm]').oninput = (e) => { bands[i].min = clampP(e.target.value) ?? 0; };
-            row.querySelector('[data-bs]').onchange = (e) => { bands[i].stage = e.target.value; };
-            row.querySelector('[data-bf]').oninput = (e) => { bands[i].fail = Math.max(0, Number(e.target.value) || 0); };
-            row.querySelector('[data-bw]').oninput = (e) => { bands[i].warn = Math.max(0, Number(e.target.value) || 0); };
+            const bm = row.querySelector('[data-bm]');
+            if (bm) bm.oninput = (e) => { rows[i].min = e.target.value === '' ? '' : (clampP(e.target.value) ?? ''); };
+            row.querySelector('[data-bf]').oninput = (e) => { rows[i].fail = Math.max(0, Number(e.target.value) || 0); };
+            row.querySelector('[data-bw]').oninput = (e) => { rows[i].warn = Math.max(0, Number(e.target.value) || 0); };
           });
         };
         paintBands();
@@ -713,7 +749,8 @@ function editVerdict(g, after) {
         $$$('#reset').onclick = async () => {
           if (!(await confirmSheet('Barème par défaut',
                 'Les seuils reviennent à ceux livrés avec l\'application.', { okLabel: 'Revenir', danger: false }))) return;
-          delete g.config.verdict;
+          const shipped = shippedVerdict(g);
+          if (shipped) g.config.verdict = shipped; else delete g.config.verdict;
           await saveGroup(g); close(); after?.();
           toast('Barème remis par défaut');
         };
@@ -726,13 +763,19 @@ function editVerdict(g, after) {
             return toast('Qualité : le seuil « moyenne » doit rester sous celui de « mauvaise »', 'err');
           if (n('sMidF', 1) > n('sLow', 2))
             return toast('Conservabilité : le seuil « moyenne » doit rester sous celui de « minimale »', 'err');
+          /* Deux stades au même seuil : le second ne serait jamais
+             atteint, et personne ne comprendrait pourquoi. */
+          const set = rows.filter(b => b.min !== '' && b.min != null && isFinite(Number(b.min)));
+          if (!fromLabels && new Set(set.map(b => Number(b.min))).size < set.length)
+            return toast('Maturité : deux stades ne peuvent pas partir de la même pression', 'err');
           g.config.verdict = {
             quality: { badFails: n('qBad', 3), midFails: n('qMidF', 1), midWarns: n('qMidW', 3) },
             shelf:   { lowFails: n('sLow', 2), midFails: n('sMidF', 1), midWarns: n('sMidW', 2) },
             press: Object.fromEntries(['critique', 'majeur', 'mineur'].map(l =>
               [l, { fail: n('p_' + l + '_f', 0), warn: n('p_' + l + '_w', 0) }])),
-            ripeness: { bands: bands.map(b => ({ min: Number(b.min) || 0, stage: b.stage,
-                                                 fail: Number(b.fail) || 0, warn: Number(b.warn) || 0 })) },
+            ripeness: { bands: set.map(b => ({ min: Number(b.min), stage: b.stage,
+                                               fail: Number(b.fail) || 0, warn: Number(b.warn) || 0 })),
+                        onlyOutsideRef: $$$('#ripeOnly') ? $$$('#ripeOnly').checked : true },
             eval: { acceptable: Math.min(1, Math.max(0, n('eAcc', 70) / 100)) }
           };
           await saveGroup(g); close(); after?.();
@@ -828,6 +871,10 @@ function editField(g, si, fi) {
   let type = f.type || 'pct';
   let sev  = f.severity || 'majeur';
   let opts = structuredClone(f.options || [{ v: 'Bonne', s: 'ok' }, { v: 'Acceptable', s: 'warn' }, { v: 'Mauvaise', s: 'fail' }]);
+  /* Chaque choix retient son libellé d'origine : renommer « Surmûr » en
+     « Trop mûr » doit emporter son palier de maturité avec lui, pas le
+     laisser pointer vers un stade qui n'existe plus. */
+  if (f.options) opts.forEach(o => { o._was = o.v; });
 
   sheet(isNew ? 'Nouveau critère' : 'Modifier le critère', `
     <div class="field"><label for="cl">Nom du critère</label>
@@ -1077,6 +1124,16 @@ function editField(g, si, fi) {
           if (type === 'num') out.step = base.step ?? 0.01;
           else delete out.step;
           for (const k of Object.keys(out)) if (out[k] === undefined) delete out[k];
+
+          /* Choix renommés : le barème de maturité suit. */
+          const renamed = new Map();
+          for (const o of out.options || []) {
+            if (o._was != null && o._was !== o.v) renamed.set(o._was, o.v);
+            delete o._was;
+          }
+          const saved = g.config.verdict?.ripeness?.bands;
+          if (renamed.size && Array.isArray(saved) && fieldRole(out) === 'ripeness')
+            for (const b of saved) if (renamed.has(b.stage)) b.stage = renamed.get(b.stage);
 
           if (fi >= 0) sec.fields[fi] = out; else sec.fields.push(out);
           await saveGroup(g); close(); renderGroupEditor(g.id);
