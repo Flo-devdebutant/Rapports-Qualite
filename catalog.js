@@ -76,7 +76,7 @@ const QUANTITE = {
   fields: [
     { key: 'qt_sample',  label: 'Caisses échantillon',   type: 'num', step: 1 },
     { key: 'qt_problem', label: 'Caisses problématiques', type: 'num', step: 1 },
-    { key: 'nc_pct',     label: '%NC', unit: '%', type: 'num', step: 0.01,
+    { key: 'nc_pct',     label: '% caisses problématiques', unit: '%', type: 'num', step: 0.01,
       computed: 'qt_problem / qt_sample * 100', okMin: 0, okMax: 10, severity: 'critique',
       hint: 'Tolérance catégorie I : 10 % de défauts totaux' }
   ]

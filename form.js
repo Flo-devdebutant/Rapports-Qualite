@@ -11,7 +11,7 @@ import { state, shell, groupById, go, back, onLeave, openNew } from './app.js';
 import { local, queue, sync, forgetPhotos, holdReport, releaseReport } from './store.js';
 import { flatFields, computeSummary, applyComputed, fieldRole, PRESSURE_ROLES,
          judgeContext, statusIn, autoFilled,
-         VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
+         ncDetail, criticalText, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { COUNTRIES_FR, countryName } from './countries.js';
 import { importJournal, recordsForLot, recentLots, lotModel, lotNumber, journalInfo } from './journal.js';
 import { defectTypes, palletDefects, palletUnder, receptionStats, pressureRequired, samplingCfg,
@@ -322,6 +322,7 @@ function verdictHtml(s) {
   }
   const d = (cls) => `<span class="dot ${cls || 'none'}"></span>`;
   const st = VERDICT_STATUS[s.verdict] || '';
+  const why = ncDetail(s), crit = criticalText(s);
   return `<div class="vfull">
     <div class="card-h" style="margin-bottom:10px"><h3>Verdict</h3>${stars(s.stars)}</div>
     <div class="verdict ${st}" style="margin-top:0">${d(st)}<span class="vt"><b>${esc(s.verdict)}</b>
@@ -331,6 +332,8 @@ function verdictHtml(s) {
       <div><span>Conservabilité</span><b>${d(SHELF_STATUS[s.shelf])}${esc(s.shelf || '—')}</b></div>
     </div>
     <div class="vline"><span>${s.fails} hors seuil</span><span>· ${s.warns} à surveiller</span></div>
+    ${crit ? `<p class="nc-why nc-crit">${esc(crit)}</p>` : ''}
+    ${why ? `<p class="nc-why"><b>Détail du %NC</b> ${esc(why)}</p>` : ''}
   </div>`;
 }
 

@@ -268,6 +268,18 @@ export class PDF {
     return this;
   }
 
+  /* Petite note sous un tableau, sur autant de lignes qu'il faut : un
+     détail qui déborde de la page ne se lit plus. */
+  note(str, { size = 7.6, color = GREY, bold = false } = {}) {
+    const lines = wrapText(str, size, bold, A4.w - 2 * M);
+    lines.forEach((l, i) => {
+      this.need(12);
+      this.text(l, M, this.y + 4, { size, color, bold });
+      this.y += i === lines.length - 1 ? 12 : 9.5;
+    });
+    return this;
+  }
+
   subhead(label) {
     this.need(16);
     this.text(label, M, this.y + 8, { size: 8.8, bold: true });

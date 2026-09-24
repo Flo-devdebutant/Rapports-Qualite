@@ -6,7 +6,7 @@ import { db, auth } from './supa.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
 import { fieldStatus, FIELD_ROLES, fieldRole, effSeverity, flatFields, roleFits, ROLE_SHORT, UNIQUE_ROLES,
          defaultRole, roleConflicts, fixRoleConflicts, clearRole,
-         verdictCfg, ripenessBands, ripenessField, bandsFromLabels } from './verdict.js';
+         verdictCfg, ripenessBands, ripenessField, bandsFromLabels, DEFAULT_VERDICT } from './verdict.js';
 import { allDrafts } from './form.js';
 import { defectTypes, samplingCfg, pressureRequired, resolveLink, DEFECT_KINDS, DEFECT_WHERE } from './reception.js';
 import { LANGS, builtinTranslation } from './report-pdf.js';
@@ -307,7 +307,8 @@ export function renderGroupEditor(id, fresh = false) {
       </div>
       <div class="field"><label for="tol">Tolérance de non-conformité (%)</label>
         <input type="number" id="tol" step="0.5" value="${cfg.tolerance ?? 10}">
-        <div class="hint">Au-delà, l'évaluation bascule en « Non Conforme ». 10 % correspond à la catégorie I des normes CEE-ONU.</div></div>
+        <div class="hint">Au-delà, en caisses problématiques, l'évaluation bascule en « Non Conforme » ; le %NC d'un lot
+          conforme ou acceptable ne la dépasse jamais. 10 % correspond à la catégorie I des normes CEE-ONU.</div></div>
       <div class="field"><label for="vars">Variétés proposées</label>
         <textarea id="vars" style="min-height:64px">${esc((cfg.varieties || []).join(', '))}</textarea>
         <div class="hint">Séparées par des virgules.</div></div>
@@ -322,7 +323,8 @@ export function renderGroupEditor(id, fresh = false) {
     <div class="card pad">
       <div class="card-h"><h3>Les trois indices du verdict</h3></div>
       <p class="muted" style="margin:-4px 0 12px">Qualité, Conservabilité et Évaluation se calculent
-        à partir des critères notés. Voici à partir de quand chacun bascule.</p>
+        à partir des critères notés. Voici à partir de quand chacun bascule, et ce que pèse chaque
+        imperfection dans le %NC.</p>
       <button class="btn ghost block" id="verdictBtn">${icon('gear')} Régler le barème des indices</button>
       <div class="hint" id="verdictSum" style="margin-top:8px">${verdictSummary(g)}</div>
     </div>
@@ -886,8 +888,10 @@ function paintDefects(g) {
 function verdictSummary(g) {
   const c = verdictCfg(g);
   const bands = ripenessBands(g).length;
+  const fr = (v) => String(v).replace('.', ',');
   return `Mauvaise à partir de ${c.quality.badFails} défauts · Minimale à partir de ${c.shelf.lowFails} · ` +
-         `${bands ? `${bands} paliers de maturité` : 'aucun palier de maturité'}.`;
+         `${bands ? `${bands} paliers de maturité` : 'aucun palier de maturité'} · ` +
+         `%NC : ${fr(c.nc.warn)} / ${fr(c.nc.fail)} / ${fr(c.nc.critical)} points par critère à surveiller / hors seuil / critique.`;
 }
 
 /* Barème livré pour ce produit, s'il existe : « revenir au barème par
@@ -961,11 +965,37 @@ function editVerdict(g, after) {
     <div class="scale-box" style="margin-top:14px">
       <h4>Évaluation</h4>
       <div class="srow"><span class="sdot fail"></span><b>Non Conforme</b>
-        <span>%NC au-delà de la tolérance (${g.config?.tolerance ?? 10} %), ou 1 défaut critique</span></div>
+        <span>caisses problématiques au-delà de la tolérance (${g.config?.tolerance ?? 10} %), ou 1 défaut critique</span></div>
       <div class="srow"><span class="sdot warn"></span><b>Acceptable</b>
-        <span>à partir de ${num('eAcc', Math.round((c.eval.acceptable || 0.7) * 100))} % de la tolérance,
-        ou 1 défaut</span></div>
+        <span>caisses problématiques à partir de ${num('eAcc', Math.round((c.eval.acceptable || 0.7) * 100))} % de la
+        tolérance, ou 1 défaut</span></div>
       <div class="srow"><span class="sdot ok"></span><b>Conforme</b><span>en dessous</span></div>
+    </div>
+
+    <!-- Le %NC dit TOUTES les imperfections du lot, pondérées : un lot
+         aux palettes fatiguées et un peu sous-calibré n'est pas à 0 %. -->
+    <div class="scale-box" style="margin-top:14px" id="ncBox">
+      <h4>Taux de non-conformité (%NC)</h4>
+      <p class="hint" style="margin:0 0 8px">Chaque imperfection du lot l'augmente, d'autant plus qu'elle
+        est grave. Pertes, sous-calibre et défauts en % comptent pour leur part de fruits touchés ; les
+        caisses problématiques, si elles sont comptées, la remplacent quand elles pèsent plus. Le %NC ne vaut 0 que
+        pour un lot parfait, et reste sous ${String(Math.round((g.config?.tolerance ?? 10) * (c.eval.acceptable || 0.7) * 100) / 100).replace('.', ',')} %
+        pour un lot conforme, sous la tolérance pour un lot acceptable.</p>
+      <div class="srow"><span class="sdot ok"></span><b>Défaut léger</b>
+        <span>${num('ncLight', Math.round(c.nc.light * 100), 5)} % d'un fruit perdu</span></div>
+      <p class="hint" style="margin:10px 0 2px">Critères qui ne sont pas des % de fruits (état des palettes,
+        emballage, étiquetage…) :</p>
+      <div class="srow"><span class="sdot warn"></span><b>À surveiller</b>
+        <span>${num('ncWarn', c.nc.warn, 0.1)} point</span></div>
+      <div class="srow"><span class="sdot fail"></span><b>Hors seuil</b>
+        <span>${num('ncFail', c.nc.fail, 0.1)} points</span></div>
+      <div class="srow"><span class="sdot fail"></span><b>Critique</b>
+        <span>${num('ncCrit', c.nc.critical, 0.1)} points</span></div>
+      <p class="hint" style="margin:10px 0 2px">Palettes hors de la référence de pression : points si tout
+        le lot l'est, au prorata des palettes sinon.</p>
+      ${['mineur', 'majeur', 'critique'].map(l => `
+        <div class="srow"><span class="sdot ${l === 'mineur' ? 'warn' : 'fail'}"></span><b>Écart ${l}</b>
+          <span>${num('ncP_' + l, c.nc.press[l], 0.5)} points</span></div>`).join('')}
     </div>
 
     <!-- La maturité du lot : c'est elle qui manquait. Un lot relevé à
@@ -1042,6 +1072,14 @@ function editVerdict(g, after) {
             return toast('Qualité : le seuil « moyenne » doit rester sous celui de « mauvaise »', 'err');
           if (n('sMidF', 1) > n('sLow', 2))
             return toast('Conservabilité : le seuil « moyenne » doit rester sous celui de « minimale »', 'err');
+          /* Un écart « à surveiller » ne peut pas peser plus qu'un écart
+             hors seuil, ni celui-ci plus qu'un défaut critique. */
+          if (!(n('ncWarn', 0.5) <= n('ncFail', 2) && n('ncFail', 2) <= n('ncCrit', 5)))
+            return toast('%NC : « à surveiller » ≤ « hors seuil » ≤ « critique »', 'err');
+          if (!(n('ncP_mineur', 2) <= n('ncP_majeur', 5) && n('ncP_majeur', 5) <= n('ncP_critique', 15)))
+            return toast('%NC : écart mineur ≤ majeur ≤ critique', 'err');
+          if (n('ncLight', 25) > 100)
+            return toast('%NC : un défaut léger ne peut pas compter plus qu\'un fruit perdu', 'err');
           /* Deux stades au même seuil : le second ne serait jamais
              atteint, et personne ne comprendrait pourquoi. */
           const set = rows.filter(b => b.min !== '' && b.min != null && isFinite(Number(b.min)));
@@ -1055,7 +1093,11 @@ function editVerdict(g, after) {
             ripeness: { bands: set.map(b => ({ min: Number(b.min), stage: b.stage,
                                                fail: Number(b.fail) || 0, warn: Number(b.warn) || 0 })),
                         onlyOutsideRef: $$$('#ripeOnly') ? $$$('#ripeOnly').checked : true },
-            eval: { acceptable: Math.min(1, Math.max(0, n('eAcc', 70) / 100)) }
+            eval: { acceptable: Math.min(1, Math.max(0, n('eAcc', 70) / 100)) },
+            nc: { light: n('ncLight', 25) / 100, warn: n('ncWarn', 0.5), fail: n('ncFail', 2),
+                  critical: n('ncCrit', 5),
+                  press: Object.fromEntries(['mineur', 'majeur', 'critique'].map(l =>
+                    [l, n('ncP_' + l, DEFAULT_VERDICT.nc.press[l])])) }
           };
           await saveGroup(g); close(); after?.();
           toast('Barème enregistré');
@@ -1178,8 +1220,9 @@ function editField(g, si, fi) {
     <div class="field"><label for="crole">Rôle dans le verdict</label>
       <select id="crole"></select>
       <div class="hint">Un rôle dit ce que le critère APPORTE au calcul, en plus de sa note. Pour qu'un critère
-        rende le rapport non conforme, choisissez plutôt la gravité « Non conforme directement ». Le %NC du rapport
-        est porté par un seul critère ; « colis contrôlés » et « colis en défaut » le calculent tout seuls.</div></div>
+        rende le rapport non conforme, choisissez plutôt la gravité « Non conforme directement ». Le % de caisses
+        problématiques est porté par un seul critère ; « colis contrôlés » et « colis en défaut » le calculent tout
+        seuls. Le %NC du lot en tient compte, avec toutes les autres imperfections.</div></div>
 
     ${typesBlock(f, sec)}
     ${!isNew ? `

@@ -17,6 +17,7 @@ import { renderSettings, renderGroups, renderGroupEditor, renderPartners, render
 import { renderStats } from './stats.js';
 import { renderPhotoArchive } from './archive.js';
 import { TYPE_LIST, reportType } from './report-types.js';
+import { upgradeNcLabel } from './verdict.js';
 
 export const state = {
   profile: null,
@@ -108,7 +109,7 @@ async function loadProfile() {
 }
 
 export async function loadRefs() {
-  state.groups = (await local.all('groups')).sort((a, b) => (a.position || 0) - (b.position || 0));
+  state.groups = upgradeNcLabel((await local.all('groups')).sort((a, b) => (a.position || 0) - (b.position || 0)));
   state.partners = (await local.all('partners')).sort((a, b) => a.name.localeCompare(b.name));
   const s = await local.meta('settings');
   if (s) state.settings = { ...DEFAULT_SETTINGS, ...s };
@@ -129,7 +130,7 @@ export async function loadRefs() {
         await db('settings').upsert([{ key: 'app', value: DEFAULT_SETTINGS }]);
       }
       await sync();
-      state.groups = (await local.all('groups')).sort((a, b) => (a.position || 0) - (b.position || 0));
+      state.groups = upgradeNcLabel((await local.all('groups')).sort((a, b) => (a.position || 0) - (b.position || 0)));
     } catch (e) { console.warn('seed', e.message); }
   }
   if (navigator.onLine) {

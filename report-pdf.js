@@ -10,7 +10,7 @@
    ------------------------------------------------------------------ */
 
 import { PDF, PAGE, MARGIN, COLORS, textWidth } from './pdf.js';
-import { flatFields, statusIn, savedContext, ripenessField, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
+import { flatFields, statusIn, savedContext, ripenessField, ncDetail, criticalText, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { receptionStats, samplingCfg } from './reception.js';
 import { logoJpeg } from './logo.js';
 import { storage, currentUser } from './supa.js';
@@ -88,6 +88,11 @@ const T_REC = {
         noMinWeight:'Poids minimum inconnu pour ces calibres : rien n\'est jugé.',
         blankOk:'Seuls les fruits sous le poids minimum sont notés : une case vide est un fruit pesé et conforme.',
         kpiNote:(c, f, k) => `Sur ${c} fruits contrôlés${k ? ` et ${k} fruits coupés` : ''}${f ? ` (${f} fruits dans le lot)` : ''}.`,
+        ncWhy:'Détail du %NC :',
+        ncW:{ fruit:'fruits touchés', boxes:'caisses problématiques', criteria:'critères', pressure:'pressions',
+              capped:(r, n, v) => `${r} %, ramené à ${n} % (plafond d'un lot ${v})` },
+        critW:{ one:'Défaut critique :', many:'Défauts critiques :',
+                pallets:(ns) => ns.length === 1 ? `Pression palette ${ns[0]}` : ns.length <= 4 ? `Pression palettes ${ns.join(', ')}` : `Pression de ${ns.length} palettes` },
         cut:'Coupés',
         defNote:(b, k) => k == null
           ? `Nombre de fruits touchés, comptés sur ${b} colis ouverts par palette. Pertes : % des fruits contrôlés.`
@@ -106,6 +111,11 @@ const T_REC = {
         noMinWeight:'Minimum weight unknown for these sizes: nothing is assessed.',
         blankOk:'Only fruit below the minimum weight are recorded: an empty cell is a fruit weighed and compliant.',
         kpiNote:(c, f, k) => `Based on ${c} fruit checked${k ? ` and ${k} fruit cut open` : ''}${f ? ` (${f} fruit in the lot)` : ''}.`,
+        ncWhy:'%NC breakdown:',
+        ncW:{ fruit:'affected fruit', boxes:'problem boxes', criteria:'criteria', pressure:'firmness',
+              capped:(r, n, v) => `${r} %, brought down to ${n} % (cap for a ${v} lot)` },
+        critW:{ one:'Critical defect:', many:'Critical defects:',
+                pallets:(ns) => ns.length === 1 ? `Firmness, pallet ${ns[0]}` : ns.length <= 4 ? `Firmness, pallets ${ns.join(', ')}` : `Firmness of ${ns.length} pallets` },
         cut:'Cut',
         defNote:(b, k) => k == null
           ? `Number of affected fruit, counted in ${b} boxes opened per pallet. Losses: % of fruit checked.`
@@ -124,6 +134,11 @@ const T_REC = {
         noMinWeight:'Peso minimo sconosciuto per questi calibri: nulla viene valutato.',
         blankOk:'Si annotano solo i frutti sotto il peso minimo: una casella vuota è un frutto pesato e conforme.',
         kpiNote:(c, f, k) => `Su ${c} frutti controllati${k ? ` e ${k} frutti tagliati` : ''}${f ? ` (${f} frutti nel lotto)` : ''}.`,
+        ncWhy:'Dettaglio %NC:',
+        ncW:{ fruit:'frutti colpiti', boxes:'colli problematici', criteria:'criteri', pressure:'pressioni',
+              capped:(r, n, v) => `${r} %, riportato al ${n} % (tetto di un lotto ${v})` },
+        critW:{ one:'Difetto critico:', many:'Difetti critici:',
+                pallets:(ns) => ns.length === 1 ? `Pressione pallet ${ns[0]}` : ns.length <= 4 ? `Pressione pallet ${ns.join(', ')}` : `Pressione di ${ns.length} pallet` },
         cut:'Tagliati',
         defNote:(b, k) => k == null
           ? `Numero di frutti colpiti, contati su ${b} colli aperti per pallet. Perdite: % dei frutti controllati.`
@@ -142,6 +157,11 @@ const T_REC = {
         noMinWeight:'Peso mínimo desconocido para estos calibres: no se evalúa nada.',
         blankOk:'Solo se anotan los frutos por debajo del peso mínimo: una casilla vacía es un fruto pesado y conforme.',
         kpiNote:(c, f, k) => `Sobre ${c} frutos controlados${k ? ` y ${k} frutos cortados` : ''}${f ? ` (${f} frutos en el lote)` : ''}.`,
+        ncWhy:'Detalle del %NC:',
+        ncW:{ fruit:'frutos afectados', boxes:'cajas problemáticas', criteria:'criterios', pressure:'presiones',
+              capped:(r, n, v) => `${r} %, reducido al ${n} % (tope de un lote ${v})` },
+        critW:{ one:'Defecto crítico:', many:'Defectos críticos:',
+                pallets:(ns) => ns.length === 1 ? `Presión palé ${ns[0]}` : ns.length <= 4 ? `Presión palés ${ns.join(', ')}` : `Presión de ${ns.length} palés` },
         cut:'Cortados',
         defNote:(b, k) => k == null
           ? `Número de frutos afectados, contados en ${b} cajas abiertas por palé. Pérdidas: % de los frutos controlados.`
@@ -160,6 +180,11 @@ const T_REC = {
         noMinWeight:'Minimumgewicht onbekend voor deze maten: niets wordt beoordeeld.',
         blankOk:'Alleen vruchten onder het minimumgewicht worden genoteerd: een leeg vak is een gewogen, conforme vrucht.',
         kpiNote:(c, f, k) => `Op ${c} gecontroleerde vruchten${k ? ` en ${k} doorgesneden vruchten` : ''}${f ? ` (${f} vruchten in de partij)` : ''}.`,
+        ncWhy:'Opbouw %NC:',
+        ncW:{ fruit:'aangetaste vruchten', boxes:'probleemcolli', criteria:'criteria', pressure:'drukmetingen',
+              capped:(r, n, v) => `${r} %, teruggebracht tot ${n} % (plafond voor een ${({ conform: 'conforme', acceptabel: 'acceptabele' })[v] || v} partij)` },
+        critW:{ one:'Kritiek gebrek:', many:'Kritieke gebreken:',
+                pallets:(ns) => ns.length === 1 ? `Drukmeting pallet ${ns[0]}` : ns.length <= 4 ? `Drukmeting pallets ${ns.join(', ')}` : `Drukmeting van ${ns.length} pallets` },
         cut:'Gesneden',
         defNote:(b, k) => k == null
           ? `Aantal aangetaste vruchten, geteld in ${b} geopende colli per pallet. Verliezen: % van de gecontroleerde vruchten.`
@@ -248,6 +273,7 @@ const TERMS = {
   'Pourriture / Anthracnose':{ en:'Decay / Anthracnose', it:'Marciume / Antracnosi', es:'Podredumbre / Antracnosis', nl:'Rot / Antracnose' },
   'Caisses échantillon':  { en:'Sample boxes', it:'Colli campione', es:'Cajas muestra', nl:'Steekproefcolli' },
   'Caisses problématiques':{ en:'Problem boxes', it:'Colli problematici', es:'Cajas problemáticas', nl:'Probleemcolli' },
+  '% caisses problématiques':{ en:'% problem boxes', it:'% colli problematici', es:'% cajas problemáticas', nl:'% probleemcolli' },
   'Mode de fret':         { en:'Freight mode', it:'Modalità di trasporto', es:'Modo de transporte', nl:'Vrachtwijze' },
   'Couleur peau':         { en:'Skin colour', it:'Colore buccia', es:'Color piel', nl:'Schilkleur' },
   'Couleur pulpe':        { en:'Pulp colour', it:'Colore polpa', es:'Color pulpa', nl:'Vruchtvleeskleur' },
@@ -463,6 +489,16 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
         nc: s.nc == null ? '' : String(s.nc),
         pal: fmt(m.pal_count), bad: badCell(h, t), lot: (isShip ? h.bl : h.lot) || '' } ]
   );
+  /* Sous le Résumé : ce qui rend le lot non conforme d'office, puis
+     d'où vient le %NC. Le fournisseur y lit le détail du chiffre qu'on
+     lui oppose. Rien pour un rapport enregistré avant la 3.3. */
+  const critLine = criticalText(s, t.critW, (c) => {
+    const f = flatFields(group, report.type).find(x => x.key === c.key);
+    return trLabel(lang, f?.label || c.label, f?.i18n);
+  });
+  const whyLine = ncDetail(s, t.ncW, (v) => tv(lang, v).toLowerCase());
+  if (critLine) doc.note(critLine, { color: COLORS.RED, bold: true });
+  if (whyLine) doc.note(`${t.ncWhy} ${whyLine}`);
 
   /* -- Indicateurs de la réception : en tête, c'est ce que le
      fournisseur lit en premier. -- */

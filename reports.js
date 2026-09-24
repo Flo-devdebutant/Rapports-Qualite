@@ -2,7 +2,7 @@
 
 import { state, shell, groupById, go, back, syncBadge, onLeave, canManage } from './app.js';
 import { local, queue, sync, releaseReport } from './store.js';
-import { flatFields, statusIn, savedContext, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
+import { flatFields, statusIn, savedContext, ncDetail, criticalText, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { $, $$, esc, icon, toast, sheet, confirmSheet, stars, fmtDate, debounce, shareFile, download } from './ui.js';
 import { buildReportPDF, reportFilename, LANGS } from './report-pdf.js';
 import { buildXlsx } from './xlsx.js';
@@ -329,6 +329,9 @@ export async function renderReportView(id) {
   const fact = (k, v, wide = false) => v == null || v === '' ? ''
     : `<div${wide ? ' class="wide"' : ''}><span>${esc(k)}</span><b>${esc(v)}</b></div>`;
   const bad = badPallets(h);
+  /* D'où vient le %NC : la question revient à chaque rapport. */
+  const why = st ? ncDetail(s) : '';
+  const ncWhy = why ? `<p class="nc-why" id="ncWhy"><b>Détail du %NC</b> ${esc(why)}</p>` : '';
 
   shell(T.title, `
    <div class="view">
@@ -341,6 +344,7 @@ export async function renderReportView(id) {
         <div class="sub">${esc([product, ref, origins].filter(Boolean).join(' · '))}</div>
         <div class="verdict ${st}"><span class="dot ${st || 'none'}"></span>
           <span class="vt"><b>${esc(st ? s.verdict : 'Non évalué')}</b>
+            ${st && criticalText(s) ? `<span class="vcrit">${esc(criticalText(s))}</span>` : ''}
             <span>${st ? `Tolérance ${s.tolerance ?? 10} %` : 'Aucun critère noté ne permet de trancher'}</span></span>
           ${st ? stars(s.stars) : ''}</div>
         <div class="idx">
@@ -348,6 +352,7 @@ export async function renderReportView(id) {
           <div><span>Conservabilité</span><b><span class="dot ${SHELF_STATUS[s.shelf] || 'none'}"></span>${esc(s.shelf || '—')}</b></div>
           <div><span>%NC</span><b>${s.nc == null ? '—' : esc(s.nc) + ' %'}</b></div>
         </div>
+        ${ncWhy}
       </div>
       ${recKpis}
       ${toc.length > 1 ? `<nav class="jump" id="vJump" aria-label="Sommaire du rapport"><span class="jt">Sommaire</span>${

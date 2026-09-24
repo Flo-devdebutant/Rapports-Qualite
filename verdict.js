@@ -75,14 +75,14 @@ export function fieldStatus(field, raw) {
    réglable dans l'éditeur ; les clés historiques gardent leur rôle par
    défaut pour qu'aucun rapport déjà enregistré ne change de verdict.
      shelf   — pèse sur la conservabilité
-     nc      — EST le taux de non-conformité, en %
+     nc      — le % de caisses problématiques, base du %NC (voir ncParts)
      sample  — nombre de colis contrôlés
-     problem — nombre de colis en défaut  (sample + problem ⇒ %NC)
+     problem — nombre de colis en défaut  (sample + problem ⇒ ce %)
    ------------------------------------------------------------------ */
 export const FIELD_ROLES = {
   '':        'Aucun rôle particulier',
   shelf:     'Compte pour la conservabilité',
-  nc:        'Est le %NC du rapport (un seul critère)',
+  nc:        '% de caisses problématiques, base du %NC (un seul critère)',
   sample:    'Nombre de colis contrôlés (calcul du %NC)',
   problem:   'Nombre de colis en défaut (calcul du %NC)',
   /* Renseignés tout seuls depuis le contrôle par palette : ces quatre
@@ -119,6 +119,21 @@ export const fieldRole = (f) =>
    explicite : un rôle simplement absent le ferait revenir. */
 export const defaultRole = (key) => DEFAULT_ROLES[key] || '';
 
+/* 3.3 : « %NC » est désormais le taux du lot, toutes imperfections
+   comprises. Le critère livré sous ce nom ne compte que les caisses
+   problématiques : il prend le nom de ce qu'il mesure, pour qu'une même
+   page n'affiche pas deux « %NC » différents. Un libellé choisi par
+   l'utilisateur n'est pas touché ; le nouveau s'enregistre à la
+   prochaine modification de la grille. */
+export const NC_FIELD_LABEL = '% caisses problématiques';
+export function upgradeNcLabel(groups) {
+  for (const g of groups || [])
+    for (const s of g?.config?.sections || [])
+      for (const f of s.fields || [])
+        if (String(f.label || '').trim() === '%NC' && fieldRole(f) === 'nc') f.label = NC_FIELD_LABEL;
+  return groups;
+}
+
 /* Un rôle chiffré ne se lit que sur un critère chiffré. « Conforme »
    vaut 1 pour l'ordinateur : un critère Conforme / Non auquel on avait
    donné le rôle « taux de non-conformité » affichait 1 % de
@@ -139,7 +154,7 @@ export const UNIQUE_ROLES = ['nc', 'sample', 'problem', 'firmMin', 'firmMax', 'f
 
 /* Libellé court, pour la ligne résumée d'un critère dans l'éditeur. */
 export const ROLE_SHORT = {
-  shelf: 'compte pour la conservabilité', nc: 'est le %NC du rapport', sample: 'colis contrôlés (%NC)',
+  shelf: 'compte pour la conservabilité', nc: '% caisses problématiques (%NC)', sample: 'colis contrôlés (%NC)',
   problem: 'colis en défaut (%NC)', firmMin: 'dureté min. du relevé', firmMax: 'dureté max. du relevé',
   firmAvg: 'dureté moyenne du relevé', ripeness: 'stade du relevé'
 };
@@ -238,7 +253,18 @@ export const DEFAULT_VERDICT = {
                  pas comme un défaut. Décochez pour juger la maturité
                  dans l'absolu, référence ou pas. */
               onlyOutsideRef: true },
-  eval:     { acceptable: 0.7 }   // part de la tolérance à partir de laquelle c'est « Acceptable »
+  eval:     { acceptable: 0.7 },  // part de la tolérance à partir de laquelle c'est « Acceptable »
+  /* Taux de non-conformité (voir ncParts) : ce que pèse chaque
+     imperfection, en points de %NC. Les pertes et le sous-calibre
+     comptent pour ce qu'ils sont — des % de fruits. */
+  nc:       { light: 0.25,       // un fruit à défaut léger compte pour un quart
+              warn: 0.5,         // critère « à surveiller »
+              fail: 2,           // critère non conforme
+              critical: 5,       // critère critique (le lot est non conforme de toute façon)
+              /* Palettes hors de la référence de pression : points si TOUT
+                 le lot l'est, au prorata des palettes sinon. Un débordement
+                 toléré compte comme un écart mineur. */
+              press: { mineur: 2, majeur: 5, critique: 15 } }
 };
 
 const merge = (d, o) => (o && typeof o === 'object') ? { ...d, ...o } : { ...d };
@@ -252,8 +278,126 @@ export function verdictCfg(group) {
                 mineur:   merge(DEFAULT_VERDICT.press.mineur,   c.press?.mineur) },
     ripeness: { bands: Array.isArray(c.ripeness?.bands) ? c.ripeness.bands : [],
                 onlyOutsideRef: c.ripeness?.onlyOutsideRef !== false },
-    eval:     merge(DEFAULT_VERDICT.eval, c.eval)
+    eval:     merge(DEFAULT_VERDICT.eval, c.eval),
+    nc:       { ...merge(DEFAULT_VERDICT.nc, c.nc), press: merge(DEFAULT_VERDICT.nc.press, c.nc?.press) }
   };
+}
+
+/* ------------------------------------------------------------------
+   Taux de non-conformité (%NC) du lot.
+   Il ne vaut 0 que pour un lot sans la moindre imperfection, et monte
+   avec chacune, d'autant plus qu'elle est grave :
+     · fruits   — les % de fruits touchés : pertes et sous-calibre en
+                  entier, défauts légers pour un quart (réglable) ;
+     · colis    — le % de caisses problématiques, quand il est compté.
+                  Il mesure la même chose que la part « fruits » : c'est
+                  la plus forte des deux qui compte ;
+     · critères — les critères qui ne sont pas des % de fruits (état
+                  des palettes, emballage, étiquetage, calibre…) : un
+                  demi-point « à surveiller », deux non conforme, cinq
+                  critique (réglable) ;
+     · pressions — les palettes hors de la référence, au prorata du lot.
+   Le verdict ne change pas de règle ; le %NC reste dans sa bande (voir
+   computeSummary). Avant la 3.3, le %NC n'était que celui des caisses
+   problématiques :
+   un lot aux palettes fatiguées, aux fruits mous et un peu
+   sous-calibrés sortait à 0 %.
+   ------------------------------------------------------------------ */
+export function ncParts(group, fields, measures, pressures, type, ctx) {
+  const P = (ctx?.cfg || verdictCfg(group)).nc;
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const inputs = new Set(['nc', 'sample', 'problem']);
+
+  /* Colis : %NC saisi, sinon caisses problématiques ÷ caisses contrôlées. */
+  let boxes = roleValue(fields, measures, 'nc');
+  if (boxes == null) {
+    const sm = roleValue(fields, measures, 'sample'), pb = roleValue(fields, measures, 'problem');
+    if (sm != null && sm > 0 && pb != null) boxes = (pb / sm) * 100;
+  }
+
+  /* Fruits : défauts comptés palette par palette (réception), sous-calibre
+     des pesées, et les critères en % de fruits touchés. Un critère rempli
+     par le comptage des palettes n'est pas compté deux fois. */
+  const rs = pressures ? receptionStats(pressures, group, type) : null;
+  const linked = rs?.active && rs.sampled ? new Set(rs.links.keys()) : new Set();
+  let fruit = 0, known = boxes != null;
+  if (rs?.active && rs.sampled) { fruit += (rs.lossPct || 0) + (rs.lightPct || 0) * P.light; known = true; }
+  if (rs?.underPct != null) { fruit += rs.underPct; known = true; }
+  for (const f of fields) {
+    if (f.type !== 'pct' || linked.has(f.key) || inputs.has(fieldRole(f))) continue;
+    const v = numOr(measures?.[f.key], null);
+    if (v == null) continue;
+    known = true;
+    if (v > 0) fruit += v * (f.severity === 'mineur' ? P.light : 1);
+  }
+
+  /* Critères notés qui ne sont pas des % de fruits. Dureté et stade
+     déduits des pressions sont comptés avec les pressions. */
+  let criteria = 0;
+  for (const f of fields) {
+    if (f.type === 'pct') continue;
+    const role = fieldRole(f);
+    if (inputs.has(role) || (ctx?.pv && PRESSURE_ROLES.includes(role))) continue;
+    const st = statusIn(ctx, f, measures?.[f.key]);
+    if (st === 'warn') criteria += P.warn;
+    else if (st === 'fail') criteria += effSeverity(f) === 'critique' ? P.critical : P.fail;
+  }
+
+  /* Pressions : chaque palette pèse sa part du lot. */
+  let pressure = 0;
+  const rows = ctx?.pv?.rows || [];
+  if (rows.length) {
+    pressure = rows.reduce((t, r) => {
+      const lvl = r.sev.level === 'ok' && r.sev.tol ? 'mineur' : r.sev.level;
+      return t + (Number(P.press[lvl]) || 0);
+    }, 0) / rows.length;
+  }
+
+  /* Chaque part est arrondie AVANT d'être additionnée : le détail
+     affiché (« 2.75 + 1 + 0.63 = 4.38 % ») doit tomber juste. */
+  const b = boxes == null ? null : r2(boxes), fr = r2(fruit), cr = r2(criteria), pr = r2(pressure);
+  const total = Math.min(100, r2(Math.max(b ?? 0, fr) + cr + pr));
+  return { boxes: b, fruit: fr, criteria: cr, pressure: pr, total, known };
+}
+
+/* Détail du %NC dans l'ordre du calcul, avec les mots d'une langue :
+   « fruits touchés 2.75 + critères 1 + pressions 0.63 = 4.38 % ».
+   Vide pour un lot sans imperfection, et pour un rapport enregistré
+   avant la 3.3 (son %NC n'avait pas de détail). */
+export const NC_WORDS_FR = {
+  fruit: 'fruits touchés', boxes: 'caisses problématiques', criteria: 'critères', pressure: 'pressions',
+  capped: (raw, nc, v) => `${raw} %, ramené à ${nc} % (plafond d'un lot ${v})`
+};
+export function ncDetail(s, w = NC_WORDS_FR, verdictWord = (v) => String(v || '').toLowerCase()) {
+  const p = s?.ncParts;
+  if (!p || s.nc == null) return '';
+  const fmt = (v) => String(Math.round(Number(v) * 100) / 100);
+  const base = p.boxes != null && p.boxes > p.fruit ? ['boxes', p.boxes] : ['fruit', p.fruit];
+  const items = [base, ['criteria', p.criteria], ['pressure', p.pressure]].filter(([, v]) => Number(v) > 0);
+  if (!items.length) return '';
+  const sum = items.map(([k, v]) => `${w[k]} ${fmt(v)}`).join(' + ');
+  const one = items.length === 1 ? `${w[items[0][0]]} ` : `${sum} = `;
+  if (p.capped) return one + w.capped(fmt(p.raw), fmt(s.nc), verdictWord(s.verdict));
+  return one + `${fmt(s.nc)} %`;
+}
+
+/* Ce qui rend le lot non conforme quel que soit son %NC : un défaut
+   critique. Sans cette ligne, « Non Conforme » à 1.5 % ne s'explique
+   pas. */
+export const CRIT_WORDS_FR = {
+  one: 'Défaut critique :', many: 'Défauts critiques :',
+  /* Les palettes se regroupent : dix « Pression palette n » à la
+     suite ne se lisent plus. */
+  pallets: (names) => names.length === 1 ? `Pression palette ${names[0]}`
+    : names.length <= 4 ? `Pression palettes ${names.join(', ')}` : `Pression de ${names.length} palettes`
+};
+export function criticalText(s, w = CRIT_WORDS_FR, label = (c) => c.label) {
+  const on = s?.criticalOn || [];
+  const names = on.filter(c => c.pallet != null).map(c => c.pallet);
+  const list = on.filter(c => c.pallet == null).map(label).filter(Boolean);
+  if (names.length) list.push(w.pallets(names));
+  if (!list.length) return '';
+  return `${on.length > 1 ? w.many : w.one} ${list.join(', ')}`;
 }
 
 /* La partie d'un libellé qui exprime une pression : la parenthèse
@@ -455,13 +599,23 @@ export function computeSummary(group, measures, pressures, type) {
 
   let fails = 0, warns = 0, oks = 0, critical = 0;
   const flagged = [];
+  const criticalOn = [];     // ce qui rend le lot non conforme d'office
 
   for (const f of fields) {
     const st = statusIn(ctx, f, measures[f.key]);
     if (!st) continue;
     if (st === 'ok') { oks++; continue; }
     if (st === 'warn') warns++;
-    if (st === 'fail') { fails++; if (effSeverity(f) === 'critique') critical++; }
+    if (st === 'fail') {
+      fails++;
+      if (effSeverity(f) === 'critique') {
+        critical++;
+        /* Le % de caisses problématiques au-delà de la tolérance se lit
+           déjà dans le %NC affiché : « Défaut critique : %NC » n'apprend
+           rien. */
+        if (!['nc', 'sample', 'problem'].includes(fieldRole(f))) criticalOn.push({ key: f.key, label: f.label });
+      }
+    }
     flagged.push({ key: f.key, label: f.label, status: st, value: measures[f.key], unit: f.unit });
   }
 
@@ -474,7 +628,13 @@ export function computeSummary(group, measures, pressures, type) {
       const lvl = row.sev.level;
       if (lvl === 'ok') { oks++; continue; }
       if (lvl === 'mineur') { warns++; }
-      else { fails++; if (lvl === 'critique') critical++; }
+      else {
+        fails++;
+        if (lvl === 'critique') {
+          critical++;
+          criticalOn.push({ key: 'pressure_' + row.name, label: `Pression palette ${row.name}`, pallet: row.name });
+        }
+      }
       flagged.push({
         key: 'pressure_' + row.name, label: `Pression palette ${row.name}`,
         status: lvl === 'mineur' ? 'warn' : 'fail',
@@ -483,27 +643,25 @@ export function computeSummary(group, measures, pressures, type) {
     }
   }
 
-  /* %NC : saisi, sinon déduit des colis problématiques. Les champs
-     concernés sont désignés par leur rôle, pas par leur nom : une
-     grille sur mesure calcule son %NC comme les grilles d'origine. */
-  const firstVal = (r) => roleValue(fields, measures, r);
-  let nc = firstVal('nc');
-  if (nc == null) {
-    const sample = firstVal('sample'), bad = firstVal('problem');
-    if (sample != null && sample > 0 && bad != null) nc = (bad / sample) * 100;
-  }
+  /* %NC du lot : toutes les imperfections, pondérées (voir ncParts). */
+  const parts = ncParts(group, fields, measures, pressures, type, ctx);
 
   /* Rien de mesuré : aucun verdict. Afficher « Conforme » sur un
      rapport vierge serait faux, et ce rapport pourrait partir tel quel
      chez un client. Un comptage de colis suffit en revanche à rendre un
      verdict : c'est la mesure de non-conformité elle-même. */
-  if (oks + warns + fails === 0 && nc == null) {
+  const boxNc = parts.boxes;
+  if (oks + warns + fails === 0 && boxNc == null) {
     return { quality: null, shelf: null, verdict: null, stars: null, nc: null,
              tolerance, fails: 0, warns: 0, oks: 0, critical: 0, flagged: [], pending: true };
   }
 
-  const ncFail = nc != null && nc > tolerance;
-  const ncWarn = nc != null && !ncFail && nc > tolerance * (Number(cfg.eval.acceptable) || 0.7);
+  /* Le verdict se juge comme avant : sur les critères, les pressions et
+     les caisses problématiques comptées. Le %NC du lot (ci-dessous) le
+     DIT en chiffre ; il ne le refait pas. */
+  const accRatio = Number(cfg.eval.acceptable) || 0.7;
+  const ncFail = boxNc != null && boxNc > tolerance;
+  const ncWarn = boxNc != null && !ncFail && boxNc > tolerance * accRatio;
 
   /* --- Qualité ---
      Un lot dont le taux de non-conformité dépasse la tolérance ne peut
@@ -585,10 +743,21 @@ export function computeSummary(group, measures, pressures, type) {
   if (verdict === 'Non Conforme') stars = Math.min(stars, 3);
   if (verdict === 'Acceptable') stars = Math.min(stars, 4);
 
+  /* %NC affiché : toutes les imperfections du lot, pondérées. Il reste
+     dans la bande de son verdict — sous 70 % de la tolérance pour un lot
+     conforme, sous la tolérance pour un lot acceptable — et ne vaut 0
+     que pour un lot sans défaut. Un lot non conforme n'a pas de plafond :
+     un défaut critique le rend non conforme même avec un taux bas. */
+  const cap = verdict === 'Conforme' ? tolerance * accRatio : verdict === 'Acceptable' ? tolerance : Infinity;
+  const nc = Math.min(parts.total, cap);
+
   return {
     quality, shelf, verdict, stars,
     nc: nc == null ? null : Math.round(nc * 100) / 100,
-    tolerance, fails, warns, oks, critical, flagged,
+    /* D'où vient le %NC : la fiche et le PDF le détaillent. */
+    ncParts: { boxes: parts.boxes, fruit: parts.fruit, criteria: parts.criteria, pressure: parts.pressure,
+               ...(parts.total > cap ? { capped: true, raw: parts.total } : {}) },
+    tolerance, fails, warns, oks, critical, flagged, criticalOn,
     ripeness: band ? { stage: band.stage, avg: lot.avg } : null,
     reception: receptionSummary(group, pressures, type, receptionTones(group, type, fields, ctx, measures)),
     /* Champs décrits sans être jugés, figés avec le verdict : la fiche,
