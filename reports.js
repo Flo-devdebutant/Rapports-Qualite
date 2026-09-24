@@ -673,10 +673,15 @@ export const isYes = (v) => v === true || v === 'true' || v === 1 || v === '1';
 async function paintViewPhotos(r) {
   const grid = $('#viewPhotos');
   if (!grid) return;
+  /* Copies locales d'abord, puis tous les liens signés en une requête. */
+  const blobs = await Promise.all(r.photos.map(async p =>
+    (!p.archived && p.localId ? (await local.get('photos', p.localId))?.blob : null) || null));
+  const signed = await storage.signedUrls(r.photos.filter((p, i) => !p.archived && !blobs[i] && p.uploaded).map(p => p.path))
+    .catch(() => new Map());
   for (const [i, p] of r.photos.entries()) {
     if (p.archived) continue;
-    const blob = p.localId ? (await local.get('photos', p.localId))?.blob : null;
-    const src = blob ? URL.createObjectURL(blob) : (p.uploaded ? await storage.signedUrl(p.path) : null);
+    const blob = blobs[i];
+    const src = blob ? URL.createObjectURL(blob) : (p.uploaded ? signed.get(p.path) || null : null);
     if (!src) continue;
     if (!grid.isConnected) { if (blob) URL.revokeObjectURL(src); return; }
     const cell = document.createElement('div');

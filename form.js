@@ -544,8 +544,16 @@ function wire() {
   const onPick = async (e) => {
     const files = [...e.target.files];
     e.target.value = '';
+    /* Au-delà de MAX_PHOTOS, le PDF (toutes les photos, en pleine
+       définition) deviendrait trop lourd pour un e-mail. On le dit, avec
+       le nombre de photos laissées de côté. */
+    const room = MAX_PHOTOS - draft.photos.length;
+    if (files.length > room) {
+      toast(room > 0 ? `${MAX_PHOTOS} photos maximum par rapport : ${files.length - room} photo${files.length - room > 1 ? 's' : ''} non ajoutée${files.length - room > 1 ? 's' : ''}`
+                     : `${MAX_PHOTOS} photos maximum par rapport`, 'err', { ms: 5000 });
+      files.length = Math.max(0, room);
+    }
     for (const file of files) {
-      if (draft.photos.length >= 12) { toast('12 photos maximum', 'err'); break; }
       /* Une photo illisible ne doit pas partir en silence : elle
          finirait dans un PDF client sous forme de page blanche. */
       let blob;
@@ -1027,6 +1035,11 @@ function refreshVerdict() {
   paintRecSummary();
 }
 
+/* Photos par rapport. Toutes vont dans le PDF, en pleine définition
+   (~200 ko chacune) : 50 photos font un PDF d'une dizaine de Mo, ce
+   qu'accepte encore un e-mail. */
+export const MAX_PHOTOS = 50;
+
 /* `paintPhotos` attend la base locale et les liens signés : deux appels
    rapprochés (ajout pendant que les vignettes arrivent) s'entrelaçaient
    et doublaient les cases. Un jeton de génération fait abandonner le
@@ -1042,15 +1055,19 @@ async function paintPhotos() {
   for (const u of photoUrls) URL.revokeObjectURL(u);
   photoUrls = [];
   grid.innerHTML = '';
+  /* À la réouverture d'un rapport déjà synchronisé, les photos ne sont
+     plus sur l'appareil : on les relit par des liens signés, demandés
+     tous ensemble — une par une, quarante photos faisaient quarante
+     allers-retours avant d'apparaître. */
+  const recs = await Promise.all(draft.photos.map(p => (p.localId ? local.get('photos', p.localId) : null)));
+  const signed = await storage.signedUrls(draft.photos.filter((p, i) => !recs[i] && p.uploaded).map(p => p.path))
+    .catch(() => new Map());
+  if (me !== photoPaint) return;
   for (const [i, p] of draft.photos.entries()) {
     const cell = document.createElement('div');
     cell.className = 'ph';
-    // À la réouverture d'un rapport déjà synchronisé, la photo n'est
-    // plus sur l'appareil : on la relit via un lien signé.
-    const rec = p.localId ? await local.get('photos', p.localId) : null;
-    const src = rec ? URL.createObjectURL(rec.blob)
-                    : (p.uploaded ? (await storage.signedUrl(p.path)) || '' : '');
-    if (me !== photoPaint) { if (rec) URL.revokeObjectURL(src); return; }
+    const rec = recs[i];
+    const src = rec ? URL.createObjectURL(rec.blob) : (p.uploaded ? signed.get(p.path) || '' : '');
     if (rec) photoUrls.push(src);
     cell.innerHTML = `<img alt="Photo ${i + 1}" src="${src}"${
       src ? '' : ' hidden'}><button type="button" aria-label="Supprimer">×</button>`;

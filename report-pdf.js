@@ -374,19 +374,23 @@ const fmtDate = (iso) => {
    décompte, un rapport annonçant douze photos à l'écran en livrait
    cinq, sans un mot, et la différence passait pour une négligence de
    l'inspecteur. */
-async function photoBytes(report, max = 8) {
+async function photoBytes(report) {
   /* Une photo archivée n'est plus sur Supabase : elle est comptée à
      part, et le PDF le dit avec la date — ce n'est pas une panne. */
   const arch = (report.photos || []).filter(p => p.archived);
   const all = (report.photos || []).filter(p => !p.archived);
+  /* TOUTES les photos du rapport : le PDF s'arrêtait à 8, et annonçait
+     les suivantes comme « n'ayant pas pu être jointes » — une panne qui
+     n'en était pas une. Copie locale d'abord ; sinon la photo est sur
+     Supabase — même si l'objet rapport tenu par l'écran la croit
+     encore « à envoyer » : elle est partie entre-temps. */
+  const blobs = await Promise.all(all.map(async p =>
+    (p.localId ? (await local.get('photos', p.localId))?.blob : null) || null));
+  const remote = await storage.downloadMany(all.filter((p, i) => !blobs[i] && p.path).map(p => p.path))
+    .catch(() => new Map());
   const out = [];
-  for (const p of all.slice(0, max)) {
-    let blob = null;
-    if (p.localId) blob = (await local.get('photos', p.localId))?.blob || null;
-    /* Sans copie locale, la photo est sur Supabase — même si l'objet
-       rapport tenu par l'écran la croit encore « à envoyer » : elle est
-       partie entre-temps. Un fichier absent répond simplement null. */
-    if (!blob && p.path) blob = await storage.download(p.path).catch(() => null);
+  for (const [i, p] of all.entries()) {
+    const blob = blobs[i] || remote.get(p.path) || null;
     if (blob) out.push(new Uint8Array(await blob.arrayBuffer()));
   }
   out.missing = all.length - out.length;

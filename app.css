@@ -407,6 +407,11 @@ input[type=checkbox]{width:20px;height:20px;accent-color:var(--orange-d)}
 
 .err-box{background:var(--fail-bg);color:var(--fail-ink);border-radius:12px;padding:11px 13px;font-size:13px;margin-bottom:12px}
 .ok-box{background:var(--ok-bg);color:var(--ok-ink);border-radius:12px;padding:11px 13px;font-size:13px;margin-bottom:12px}
+.warn-box{background:var(--warn-bg);color:var(--warn-ink);border-radius:12px;padding:12px 13px;font-size:13px;margin-bottom:12px;
+  border:1px solid color-mix(in srgb,var(--warn) 35%,transparent)}
+.warn-box > b{display:block;font-size:13.5px;margin-bottom:4px}
+.warn-box p{margin:0 0 6px;line-height:1.45}
+.warn-box .btn{margin-top:4px}
 .info-box{display:flex;gap:10px;align-items:flex-start;background:var(--sunken);border:1px solid var(--line);border-radius:12px;
   padding:11px 13px;font-size:13px;color:var(--ink-2);margin-bottom:12px}
 .info-box svg{width:18px;height:18px;flex:0 0 18px;margin-top:1px;color:var(--ink-3)}

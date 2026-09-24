@@ -212,6 +212,13 @@ function tidy(text) {
 export const db = (table) => new Query(table);
 
 /* ---------------------------- STORAGE ---------------------------- */
+/* `n` tâches au plus en même temps, dans l'ordre de la liste. */
+export async function eachLimit(items, n, fn) {
+  let i = 0;
+  const run = async () => { while (i < items.length) { const k = i++; await fn(items[k], k); } };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, run));
+}
+
 export const storage = {
   async upload(path, blob, contentType = 'image/jpeg') {
     const r = await fetch(`${base()}/storage/v1/object/photos/${path}`, {
@@ -241,11 +248,51 @@ export const storage = {
     return `${base()}/storage/v1${d.signedURL}`;
   },
 
+  /* Plusieurs liens signés en UNE requête. Avec 40 photos, les demander
+     une à une faisait 40 allers-retours avant le premier affichage — et
+     autant avant le PDF. Une photo que la réponse groupée ne couvre pas
+     (réponse partielle, API indisponible) retombe sur la demande
+     unitaire : au pire, le comportement d'avant. Renvoie Map chemin → lien. */
+  async signedUrls(paths, expiresIn = 3600) {
+    const out = new Map();
+    const list = [...new Set((paths || []).filter(Boolean))];
+    if (!list.length) return out;
+    try {
+      const r = await fetch(`${base()}/storage/v1/object/sign/photos`, {
+        method: 'POST',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ expiresIn, paths: list })
+      });
+      if (r.ok) {
+        const d = await r.json();
+        for (const x of Array.isArray(d) ? d : [])
+          if (x && x.path && x.signedURL && !x.error) out.set(x.path, `${base()}/storage/v1${x.signedURL}`);
+      }
+    } catch (e) {}
+    await eachLimit(list.filter(p => !out.has(p)), 4, async (p) => {
+      const u = await this.signedUrl(p, expiresIn).catch(() => null);
+      if (u) out.set(p, u);
+    });
+    return out;
+  },
+
   async download(path) {
     const url = await this.signedUrl(path, 600);
     if (!url) return null;
     const r = await fetch(url);
     return r.ok ? await r.blob() : null;
+  },
+
+  /* Téléchargement de plusieurs photos : un seul lot de liens signés,
+     puis quatre téléchargements à la fois. Map chemin → Blob (absent
+     si la photo n'a pas pu être lue). */
+  async downloadMany(paths) {
+    const out = new Map();
+    const urls = await this.signedUrls(paths, 600);
+    await eachLimit([...urls], 4, async ([p, u]) => {
+      try { const r = await fetch(u); if (r.ok) out.set(p, await r.blob()); } catch (e) {}
+    });
+    return out;
   },
 
   async remove(path) {

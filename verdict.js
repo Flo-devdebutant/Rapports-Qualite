@@ -82,9 +82,9 @@ export function fieldStatus(field, raw) {
 export const FIELD_ROLES = {
   '':        'Aucun rôle particulier',
   shelf:     'Compte pour la conservabilité',
-  nc:        'Taux de non-conformité (%)',
-  sample:    'Nombre de colis contrôlés',
-  problem:   'Nombre de colis en défaut',
+  nc:        'Est le %NC du rapport (un seul critère)',
+  sample:    'Nombre de colis contrôlés (calcul du %NC)',
+  problem:   'Nombre de colis en défaut (calcul du %NC)',
   /* Renseignés tout seuls depuis le contrôle par palette : ces quatre
      valeurs SONT le relevé au pénétromètre, résumé. Les ressaisir à la
      main, c'était risquer deux chiffres différents pour une même
@@ -113,6 +113,103 @@ const SHELF_ROLES = ['shelf', 'firmAvg', 'ripeness'];
 
 export const fieldRole = (f) =>
   (f && f.role != null ? f.role : DEFAULT_ROLES[f?.key]) || '';
+
+/* Rôle par défaut attaché à la clé d'un critère livré (« nc_pct » est
+   le %NC, etc.). Pour le retirer, le critère doit porter un rôle vide
+   explicite : un rôle simplement absent le ferait revenir. */
+export const defaultRole = (key) => DEFAULT_ROLES[key] || '';
+
+/* Un rôle chiffré ne se lit que sur un critère chiffré. « Conforme »
+   vaut 1 pour l'ordinateur : un critère Conforme / Non auquel on avait
+   donné le rôle « taux de non-conformité » affichait 1 % de
+   non-conformité sur un rapport où aucun colis n'était en défaut. */
+export const ROLE_TYPES = {
+  shelf:    ['pct', 'num', 'bool', 'choice'],
+  nc:       ['pct', 'num'],
+  sample:   ['num'],
+  problem:  ['num'],
+  firmMin:  ['num'], firmMax: ['num'], firmAvg: ['num'],
+  ripeness: ['choice']
+};
+export const roleFits = (role, type) => !role || (ROLE_TYPES[role] || []).includes(type || 'pct');
+
+/* Rôles qu'un seul critère de la grille peut porter : il n'y a qu'un
+   %NC, qu'un nombre de colis contrôlés, qu'une dureté moyenne… */
+export const UNIQUE_ROLES = ['nc', 'sample', 'problem', 'firmMin', 'firmMax', 'firmAvg', 'ripeness'];
+
+/* Libellé court, pour la ligne résumée d'un critère dans l'éditeur. */
+export const ROLE_SHORT = {
+  shelf: 'compte pour la conservabilité', nc: 'est le %NC du rapport', sample: 'colis contrôlés (%NC)',
+  problem: 'colis en défaut (%NC)', firmMin: 'dureté min. du relevé', firmMax: 'dureté max. du relevé',
+  firmAvg: 'dureté moyenne du relevé', ripeness: 'stade du relevé'
+};
+
+/* Valeur d'un rôle chiffré : le premier critère chiffré qui le porte et
+   qui est renseigné. Pour le %NC, un %NC CALCULÉ (colis en défaut ÷
+   colis contrôlés) passe avant un pourcentage saisi : si plusieurs
+   critères portent ce rôle par erreur, c'est le comptage qui fait foi. */
+export function roleValue(fields, measures, role) {
+  const list = fields.filter(f => fieldRole(f) === role && roleFits(role, f.type));
+  const ordered = role === 'nc' ? [...list.filter(f => f.computed), ...list.filter(f => !f.computed)] : list;
+  for (const f of ordered) {
+    const raw = measures?.[f.key];
+    if (typeof raw === 'boolean') continue;
+    const v = numOr(raw, null);
+    if (v != null) return v;
+  }
+  return null;
+}
+
+/* Rôles mal placés dans une grille : un rôle unique porté par
+   plusieurs critères, ou un rôle chiffré sur un critère qui ne l'est
+   pas. `keep` : le critère qui garderait le rôle si l'on corrige. */
+const gridFields = (group) => {
+  const out = [];
+  for (const s of group?.config?.sections || []) {
+    if (isHidden(s)) continue;
+    for (const f of s.fields || []) if (fieldLive(s, f)) out.push(f);
+  }
+  return out;
+};
+
+export function roleConflicts(group) {
+  const fields = gridFields(group);
+  const out = [];
+  const misfit = fields.filter(f => fieldRole(f) && !roleFits(fieldRole(f), f.type));
+  if (misfit.length) out.push({ kind: 'misfit', fields: misfit });
+  for (const r of UNIQUE_ROLES) {
+    const holders = fields.filter(f => fieldRole(f) === r && roleFits(r, f.type));
+    if (holders.length < 2) continue;
+    const keep = (r === 'nc' && holders.find(f => f.computed))
+      || holders.find(f => DEFAULT_ROLES[f.key] === r) || holders[holders.length - 1];
+    out.push({ kind: 'dup', role: r, fields: holders, keep });
+  }
+  return out;
+}
+
+/* Retire un rôle à un critère. Le critère retrouve son rôle d'origine
+   (celui de sa clé livrée : « Pourriture » compte pour la
+   conservabilité) — sauf si c'est justement ce rôle-là qu'on retire,
+   auquel cas un rôle vide explicite l'empêche de revenir. */
+export function clearRole(f, role) {
+  const d = DEFAULT_ROLES[f.key];
+  if (d && d !== role && roleFits(d, f.type)) delete f.role;
+  else if (d) f.role = '';
+  else delete f.role;
+}
+
+/* Corrige ce que `roleConflicts` signale : rôle retiré des critères mal
+   placés et de ceux qui doublonnent. Renvoie le nombre de critères
+   modifiés. */
+export function fixRoleConflicts(group) {
+  const drop = new Map();
+  for (const c of roleConflicts(group)) {
+    if (c.kind === 'misfit') c.fields.forEach(f => drop.set(f, fieldRole(f)));
+    else c.fields.filter(f => f !== c.keep).forEach(f => drop.set(f, c.role));
+  }
+  for (const [f, r] of drop) clearRole(f, r);
+  return drop.size;
+}
 
 /* ------------------------------------------------------------------
    Barème des trois indices — réglable par produit.
@@ -389,14 +486,7 @@ export function computeSummary(group, measures, pressures, type) {
   /* %NC : saisi, sinon déduit des colis problématiques. Les champs
      concernés sont désignés par leur rôle, pas par leur nom : une
      grille sur mesure calcule son %NC comme les grilles d'origine. */
-  const byRole = (r) => fields.filter(f => fieldRole(f) === r);
-  const firstVal = (r) => {
-    for (const f of byRole(r)) {
-      const v = numOr(measures[f.key], null);
-      if (v != null) return v;
-    }
-    return null;
-  };
+  const firstVal = (r) => roleValue(fields, measures, r);
   let nc = firstVal('nc');
   if (nc == null) {
     const sample = firstVal('sample'), bad = firstVal('problem');
@@ -602,15 +692,9 @@ export function applyComputed(group, measures, pressures, type) {
     /* Le %NC se recalcule à partir des champs qui portent les rôles
        « contrôlés » et « en défaut », quel que soit leur nom : une
        grille sur mesure bénéficie du même automatisme. */
-    if (fieldRole(f) === 'nc') {
+    if (fieldRole(f) === 'nc' && roleFits('nc', f.type)) {
       const all = flatFields(group);
-      const pick = (r) => {
-        for (const x of all) if (fieldRole(x) === r) {
-          const v = numOr(out[x.key], null);
-          if (v != null) return v;
-        }
-        return null;
-      };
+      const pick = (r) => roleValue(all, out, r);
       const s = pick('sample'), b = pick('problem');
       if (s && b != null && out['_manual_' + f.key] !== true) out[f.key] = round2((b / s) * 100);
     }

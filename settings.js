@@ -4,7 +4,8 @@ import { state, shell, go, back, loadRefs, logout, canManage, isAdmin } from './
 import { local, queue, sync, pendingCount } from './store.js';
 import { db, auth } from './supa.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
-import { fieldStatus, FIELD_ROLES, fieldRole, effSeverity, flatFields,
+import { fieldStatus, FIELD_ROLES, fieldRole, effSeverity, flatFields, roleFits, ROLE_SHORT, UNIQUE_ROLES,
+         defaultRole, roleConflicts, fixRoleConflicts, clearRole,
          verdictCfg, ripenessBands, ripenessField, bandsFromLabels } from './verdict.js';
 import { allDrafts } from './form.js';
 import { defectTypes, samplingCfg, pressureRequired, resolveLink, DEFECT_KINDS, DEFECT_WHERE } from './reception.js';
@@ -411,6 +412,7 @@ export function renderGroupEditor(id, fresh = false) {
     <section ${pane('grid')}>
     <p class="muted" style="margin:0 2px 10px">${(cfg.sections || []).length} sections · ${nCrit} critères.
       Touchez un critère pour changer son barème ; « Critère » en ajoute un.</p>
+    ${roleBanner(g)}
     <!-- On ne contrôle pas les mêmes choses à l'arrivée d'un conteneur
          et sur une chaîne de conditionnement. Ce filtre montre la
          grille telle qu'elle se présentera pour un type de rapport
@@ -490,6 +492,12 @@ export function renderGroupEditor(id, fresh = false) {
            frappe : le redessin repart de valeurs à jour, et « Enregistrer »
            n'a plus qu'à persister. */
         readHeader();
+        const rf = $('#roleFix');
+        if (rf) rf.onclick = async () => {
+          const n = fixRoleConflicts(g);
+          await saveGroup(g); renderGroupEditor(g.id);
+          toast(`${n} rôle${n > 1 ? 's' : ''} corrigé${n > 1 ? 's' : ''}`);
+        };
         ['#nm', '#ic', '#tol', '#vars', '#pf', '#ps', '#prf', '#smpB', '#smpK', '#smpC'].forEach(s => {
           const i = $(s); if (i) i.oninput = () => { readHeader(); const h = $('#smpHint'); if (h) h.textContent = samplingHint(g); };
         });
@@ -792,6 +800,26 @@ function samplingHint(g) {
   if (!perKg) return `Exemple : calibre 12 → 12 fruits par colis, ${boxes * 12} fruits contrôlés par palette.` + int;
   return `Exemple : calibre 16 en colis de ${f(perKg)} kg → 16 fruits par colis, ${boxes * 16} contrôlés ; ` +
          `en colis de 10 kg → ${f(16 * 10 / perKg)} par colis, ${f(boxes * 16 * 10 / perKg)} contrôlés.` + int;
+}
+
+/* Rôles mal placés (voir roleConflicts) : dits en clair, corrigés
+   d'une touche. Un rôle « %NC » posé sur un critère Conforme / Non
+   faisait afficher 1 % de non-conformité à un rapport sans défaut. */
+function roleBanner(g) {
+  const cs = roleConflicts(g);
+  if (!cs.length) return '';
+  const names = (fs) => fs.map(f => `« ${esc(f.label)} »`).join(', ');
+  const lines = cs.map(c => c.kind === 'misfit'
+    ? `Rôle sans effet sur ${names(c.fields)} : un critère Conforme / Non ou à choix ne peut pas porter un
+       rôle chiffré. La correction le retire.`
+    : `Le rôle « ${esc(ROLE_SHORT[c.role])} » est porté par ${c.fields.length} critères : ${names(c.fields)}.
+       Un seul doit le porter : la correction le laisse à « ${esc(c.keep.label)} ».`);
+  return `<div class="warn-box" id="roleWarn">
+    <b>Rôles à corriger</b>
+    ${lines.map(l => `<p>${l}</p>`).join('')}
+    <p>Pour qu'un critère fasse basculer le rapport en Non Conforme, c'est sa gravité qui compte : « Non conforme
+      directement ». Le rôle n'y est pour rien.</p>
+    <button type="button" class="btn sm" id="roleFix">Corriger les rôles</button></div>`;
 }
 
 /* Liste des défauts comptés. Dès qu'on la touche, elle s'enregistre
@@ -1148,10 +1176,10 @@ function editField(g, si, fi) {
          désormais un réglage, donc disponible sur une grille créée de
          toutes pièces. -->
     <div class="field"><label for="crole">Rôle dans le verdict</label>
-      <select id="crole">${Object.entries(FIELD_ROLES).map(([v, w]) =>
-        `<option value="${v}"${v === fieldRole(f) ? ' selected' : ''}>${esc(w)}</option>`).join('')}</select>
-      <div class="hint">« Contrôlés » et « en défaut » se combinent pour calculer
-        automatiquement le taux de non-conformité du rapport.</div></div>
+      <select id="crole"></select>
+      <div class="hint">Un rôle dit ce que le critère APPORTE au calcul, en plus de sa note. Pour qu'un critère
+        rende le rapport non conforme, choisissez plutôt la gravité « Non conforme directement ». Le %NC du rapport
+        est porté par un seul critère ; « colis contrôlés » et « colis en défaut » le calculent tout seuls.</div></div>
 
     ${typesBlock(f, sec)}
     ${!isNew ? `
@@ -1292,12 +1320,27 @@ function editField(g, si, fi) {
           runTry();
         };
 
+        /* Seuls les rôles qui ont un sens pour ce type de critère sont
+           proposés : un critère Conforme / Non ne peut pas « être » un
+           pourcentage de non-conformité. */
+        let role = fieldRole(f);
+        const paintRoles = () => {
+          const sel = $$$('#crole');
+          if (!sel) return;
+          if (!roleFits(role, type)) role = '';
+          sel.innerHTML = Object.entries(FIELD_ROLES).filter(([v]) => roleFits(v, type)).map(([v, w]) =>
+            `<option value="${v}"${v === role ? ' selected' : ''}>${esc(w)}</option>`).join('');
+          sel.onchange = () => { role = sel.value; };
+        };
+        paintRoles();
+
         el.querySelectorAll('#kindBox .obtn').forEach(b => b.onclick = () => {
           type = b.dataset.k;
           el.querySelectorAll('#kindBox .obtn').forEach(x =>
             x.setAttribute('aria-pressed', String(x.dataset.k === type)));
           if (!outcomesFor(type).includes(sev)) sev = outcomesFor(type)[0];
           paintScale();
+          paintRoles();
         });
         $$$('#cu').oninput = paintScale;
         paintScale();
@@ -1366,7 +1409,7 @@ function editField(g, si, fi) {
             unit: $$$('#cu').value.trim() || undefined,
             hint: $$$('#ch').value.trim() || undefined,
             types: readTypes(el),
-            role: $$$('#crole')?.value || undefined,
+            role: role || (defaultRole(f.key) ? '' : undefined),
             i18n: readI18n(el),
             ...d
           };
@@ -1387,7 +1430,17 @@ function editField(g, si, fi) {
             for (const b of saved) if (renamed.has(b.stage)) b.stage = renamed.get(b.stage);
 
           if (fi >= 0) sec.fields[fi] = out; else sec.fields.push(out);
+
+          /* Un seul %NC, un seul nombre de colis contrôlés… : donner le
+             rôle à ce critère le retire à celui qui le portait. */
+          const moved = [];
+          if (UNIQUE_ROLES.includes(role)) {
+            for (const s2 of g.config.sections || [])
+              for (const x of s2.fields || [])
+                if (x !== out && fieldRole(x) === role) { clearRole(x, role); moved.push(x.label); }
+          }
           await saveGroup(g); close(); renderGroupEditor(g.id);
+          if (moved.length) toast(`Rôle « ${ROLE_SHORT[role]} » retiré de : ${moved.join(', ')}`, '', { ms: 6000 });
         };
       } });
 }
@@ -1414,7 +1467,7 @@ const sevDot = (f) => {
 const describe = (f) => {
   const u = f.unit ? ' ' + f.unit : '';
   const beyond = (OUTCOMES[effSeverity(f)] || OUTCOMES.majeur)[0].toLowerCase();
-  const role = fieldRole(f) ? ` · ${FIELD_ROLES[fieldRole(f)].toLowerCase()}` : '';
+  const role = fieldRole(f) && roleFits(fieldRole(f), f.type) ? ` · ${ROLE_SHORT[fieldRole(f)] || FIELD_ROLES[fieldRole(f)].toLowerCase()}` : '';
   if (f.type === 'pct')
     return (f.warnAt == null && f.failAt == null)
       ? 'Pourcentage informatif, jamais noté' + role
