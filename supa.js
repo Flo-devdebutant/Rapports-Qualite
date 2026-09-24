@@ -257,6 +257,11 @@ export const storage = {
     const out = new Map();
     const list = [...new Set((paths || []).filter(Boolean))];
     if (!list.length) return out;
+    /* Chemins sur lesquels la réponse groupée s'est prononcée, lien ou
+       refus : une photo que le serveur dit absente n'est pas redemandée
+       une à une. Vingt-huit photos pas encore envoyées faisaient
+       vingt-huit requêtes de plus, toutes refusées. */
+    const answered = new Set();
     try {
       const r = await fetch(`${base()}/storage/v1/object/sign/photos`, {
         method: 'POST',
@@ -265,15 +270,44 @@ export const storage = {
       });
       if (r.ok) {
         const d = await r.json();
-        for (const x of Array.isArray(d) ? d : [])
-          if (x && x.path && x.signedURL && !x.error) out.set(x.path, `${base()}/storage/v1${x.signedURL}`);
+        for (const x of Array.isArray(d) ? d : []) {
+          if (!x || !x.path) continue;
+          answered.add(x.path);
+          if (x.signedURL && !x.error) out.set(x.path, `${base()}/storage/v1${x.signedURL}`);
+        }
       }
     } catch (e) {}
-    await eachLimit(list.filter(p => !out.has(p)), 4, async (p) => {
+    await eachLimit(list.filter(p => !answered.has(p)), 4, async (p) => {
       const u = await this.signedUrl(p, expiresIn).catch(() => null);
       if (u) out.set(p, u);
     });
     return out;
+  },
+
+  /* Lesquels de ces fichiers sont sur le serveur ? Une panne (réseau,
+     serveur) lève une erreur au lieu de répondre « aucun » : conclure
+     à l'absence d'une photo, c'est la retirer du rapport. */
+  async existing(paths) {
+    const list = [...new Set((paths || []).filter(Boolean))];
+    const found = new Set();
+    if (!list.length) return found;
+    const r = await fetch(`${base()}/storage/v1/object/sign/photos`, {
+      method: 'POST',
+      headers: await authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ expiresIn: 60, paths: list })
+    });
+    if (!r.ok) {
+      const e = new Error(tidy(await r.text()));
+      e.status = r.status;
+      throw e;
+    }
+    const d = await r.json();
+    /* Une réponse qui ne parle pas de tous les fichiers ne prouve rien
+       pour les autres : on réessaiera plus tard. */
+    const said = new Set((Array.isArray(d) ? d : []).map(x => x?.path));
+    if (!Array.isArray(d) || list.some(p => !said.has(p))) throw new Error('Réponse incomplète du stockage');
+    for (const x of d) if (x && x.path && x.signedURL && !x.error) found.add(x.path);
+    return found;
   },
 
   async download(path) {

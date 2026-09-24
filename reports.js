@@ -1,7 +1,7 @@
 /* Flux des rapports (liste filtrable) et fiche d'un rapport. */
 
 import { state, shell, groupById, go, back, syncBadge, onLeave, canManage } from './app.js';
-import { local, queue, sync, releaseReport } from './store.js';
+import { local, queue, sync, releaseReport, retryBlocked } from './store.js';
 import { flatFields, statusIn, savedContext, ncDetail, criticalText, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
 import { $, $$, esc, icon, toast, sheet, confirmSheet, stars, fmtDate, debounce, shareFile, download } from './ui.js';
 import { buildReportPDF, reportFilename, LANGS } from './report-pdf.js';
@@ -360,6 +360,7 @@ export async function renderReportView(id) {
     </aside>
 
     <div class="v-main">
+      <div id="sendState"></div>
       <section class="card pad" id="v-info">
         <div class="card-h"><h3>Informations</h3></div>
         <div class="facts">
@@ -403,10 +404,10 @@ export async function renderReportView(id) {
         <div class="card-h"><h3>Remarques</h3></div>
         <div class="remarks">${esc(r.remarks)}</div></section>` : ''}
 
-      ${nPhotos ? `<section class="card pad" id="v-photos">
+      ${nPhotos || lostPhotos(r) ? `<section class="card pad" id="v-photos">
         <div class="card-h"><h3>Photos (${nPhotos})</h3></div>
         ${livePhotos(r).length ? '<div class="photo-grid" id="viewPhotos"></div>' : ''}
-        ${archivedNote(r)}</section>` : ''}
+        ${archivedNote(r)}${lostNote(r)}</section>` : ''}
     </div>
    </div>
 
@@ -419,6 +420,7 @@ export async function renderReportView(id) {
       actions: canEdit ? `<button class="icon-btn" id="editBtn" aria-label="Modifier le rapport" title="Modifier">${icon('edit')}</button>` : '',
       onMount() {
         if (r.photos?.length) paintViewPhotos(r);
+        paintSendState(r);
         wireJump('vJump', '.v-main > section[id]');
         $('#pdfBtn').onclick   = () => exportFlow(r, g, 'download');
         $('#shareBtn').onclick = () => exportFlow(r, g, 'share');
@@ -699,6 +701,43 @@ async function paintViewPhotos(r) {
     grid.appendChild(cell);
   }
 }
+/* Envoi refusé par le serveur : la fiche le dit, avec la raison, et
+   permet de réessayer. Avant, le rapport restait « à envoyer » à vie
+   sans qu'aucun écran n'explique pourquoi. */
+async function paintSendState(r) {
+  const box = $('#sendState');
+  if (!box || !r._dirty) return;
+  const item = (await local.all('outbox')).find(i => i.kind === 'report' && i.payload?.id === r.id);
+  if (!item?.blocked || !box.isConnected) return;
+  box.innerHTML = `<div class="warn-box" id="sendRefused"><b>Envoi refusé par le serveur</b>
+    <p>${esc(item.lastError || 'Raison inconnue.')}</p>
+    <p>Le rapport est bien enregistré sur cet appareil. Tant qu'il n'est pas envoyé, les autres appareils
+      voient la version précédente.</p>
+    <button type="button" class="btn sm" id="retrySend">Réessayer l'envoi</button></div>`;
+  $('#retrySend').onclick = async () => {
+    const b = $('#retrySend'); b.disabled = true;
+    await retryBlocked();
+    const ok = await sync();
+    const cur = await local.get('reports', r.id);
+    if (ok && cur && !cur._dirty) { box.innerHTML = ''; toast('Rapport envoyé'); }
+    else { b.disabled = false; toast('Toujours refusé : ' + (((await local.all('outbox'))
+      .find(i => i.kind === 'report' && i.payload?.id === r.id) || {}).lastError || 'nouvelle tentative plus tard'), 'err', { ms: 7000 }); }
+  };
+}
+
+/* Photos perdues avant l'envoi : ni sur l'appareil qui les avait
+   prises, ni sur le serveur. Le rapport le dit plutôt que de les
+   taire. */
+const lostPhotos = (r) => Number(r.header?.photos_lost) || 0;
+function lostNote(r) {
+  const n = lostPhotos(r);
+  if (!n) return '';
+  const txt = n > 1
+    ? `${n} photos n'ont pas pu être envoyées : leurs fichiers n'étaient plus sur l'appareil qui les avait prises. Ajoutez-les de nouveau si vous les avez encore.`
+    : `1 photo n'a pas pu être envoyée : le fichier n'était plus sur l'appareil qui l'avait prise. Ajoutez-la de nouveau si vous l'avez encore.`;
+  return `<p class="hint" id="lostNote" style="margin:${livePhotos(r).length ? '8px' : '0'} 0 0;color:var(--warn-ink)">${txt}</p>`;
+}
+
 /* Photos archivées : retirées de Supabase, elles ne vivent plus que
    dans les PDF de l'archive. Le rapport le dit, avec la date. */
 export const livePhotos = (r) => (r.photos || []).filter(p => !p.archived);

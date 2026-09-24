@@ -7,7 +7,8 @@
 
 import { CONFIG } from './config.js';
 import { auth, db, currentUser } from './supa.js';
-import { local, sync, startAutoSync, onSync, pendingCount, openDB, forgetPhotos, forgetSharedJournal } from './store.js';
+import { local, sync, startAutoSync, onSync, openDB, forgetPhotos, forgetSharedJournal,
+         outboxInfo, retryBlocked, retryBlockedAfterUpdate } from './store.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
 import { $, $$, esc, icon, toast, closeSheets, sheet, brandMark, initials } from './ui.js';
 import { logoDataUrl } from './logo.js';
@@ -65,6 +66,11 @@ async function bootInner() {
   try { await forgetSharedJournal(); } catch (e) { /* ménage facultatif */ }
   if (!currentUser()) return renderAuth();
 
+  /* Première ouverture d'une nouvelle version : les envois que le
+     serveur avait refusés sont retentés — la mise à jour en a peut-être
+     corrigé la cause (3.3.1 : un rapport refusé pour un champ inconnu). */
+  try { await retryBlockedAfterUpdate(CONFIG.version); } catch (e) {}
+
   /* On tire d'abord ce que le serveur a, puis on lit le cache : sans
      cet ordre, le tout premier démarrage trouvait la base locale vide
      et un administrateur réécrivait par-dessus les grilles du serveur,
@@ -85,7 +91,8 @@ async function bootInner() {
   startAutoSync();
   onSync(async (s) => {
     state.syncState = s;
-    state.pending = await pendingCount();
+    const info = await outboxInfo();
+    state.pending = info.pending; state.blocked = info.blocked;
     updateSyncBadge();
     /* Ré-affichage sans relancer de synchronisation : passer par
        route() rappellerait renderFeed en mode « rafraîchir », donc
@@ -269,19 +276,40 @@ export function syncBadge() {
 async function syncNow() {
   if (!navigator.onLine) return toast('Hors-ligne : envoi dès le retour du réseau', 'err');
   toast('Synchronisation…');
+  /* « Synchroniser » retente aussi ce que le serveur avait refusé :
+     c'est le geste naturel, et il n'existait aucun autre moyen de
+     relancer un envoi bloqué. */
+  await retryBlocked();
   const ok = await sync();
-  const left = await pendingCount();
-  if (!ok) toast('Envoi incomplet, nouvelle tentative automatique', 'err');
-  else toast(left ? `${left} élément${left > 1 ? 's' : ''} encore en attente` : 'À jour');
+  const info = await outboxInfo();
+  if (info.blocked) toast(await refusedText(info), 'err', { ms: 9000 });
+  else if (!ok) toast('Envoi incomplet, nouvelle tentative automatique', 'err');
+  else toast(info.pending ? `${info.pending} élément${info.pending > 1 ? 's' : ''} encore en attente` : 'À jour');
+}
+
+/* « Envoi refusé par le serveur (rapport n° 26-000003) : raison » —
+   le numéro plutôt qu'un identifiant, la raison telle que le serveur
+   l'a donnée. */
+async function refusedText(info) {
+  const r0 = info.reasons[0] || {};
+  const rep = r0.id ? await local.get('reports', r0.id) : null;
+  const what = rep ? `rapport n° ${rep.report_no || '—'}` : r0.kind === 'partner' ? 'carnet d\'adresses'
+    : r0.kind === 'group' ? 'réglages d\'un produit' : 'un élément';
+  const more = info.blocked > 1 ? ` — et ${info.blocked - 1} autre${info.blocked > 2 ? 's' : ''}` : '';
+  return `Envoi refusé par le serveur (${what}) : ${r0.error || 'raison inconnue'}${more}`;
 }
 
 function updateSyncBadge() {
   const btn = $('#syncBtn');
   if (btn && !btn.dataset.wired) { btn.dataset.wired = '1'; btn.onclick = syncNow; }
   const offline = !navigator.onLine;
+  /* Un envoi refusé ne part pas tout seul : il se signale à part, en
+     rouge, plutôt que noyé dans « à envoyer ». */
+  const refused = state.blocked || 0;
   const text = offline ? (state.pending ? `${state.pending} en attente` : 'Hors-ligne')
+    : refused ? `${refused} refusé${refused > 1 ? 's' : ''}`
     : state.pending > 0 ? `${state.pending} à envoyer` : 'À jour';
-  const kind = offline ? 'off' : state.pending > 0 ? 'pending' : '';
+  const kind = offline ? 'off' : refused ? 'err' : state.pending > 0 ? 'pending' : '';
   const tag = $('#syncTag');
   if (tag) {
     if (kind) {

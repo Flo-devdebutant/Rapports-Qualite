@@ -8,7 +8,7 @@
    ------------------------------------------------------------------ */
 
 import { state, shell, groupById, go, back, onLeave, openNew } from './app.js';
-import { local, queue, sync, forgetPhotos, holdReport, releaseReport } from './store.js';
+import { local, queue, sync, forgetPhotos, holdReport, releaseReport, watchLivePhotos } from './store.js';
 import { flatFields, computeSummary, applyComputed, fieldRole, PRESSURE_ROLES,
          judgeContext, statusIn, autoFilled,
          ncDetail, criticalText, VERDICT_STATUS, QUALITY_STATUS, SHELF_STATUS } from './verdict.js';
@@ -28,6 +28,10 @@ import { wireJump } from './reports.js';
 import { currentUser, storage } from './supa.js';
 
 let draft = null;          // rapport en cours d'édition
+/* Les photos du rapport ouvert ne sont jamais effacées par le ménage
+   des fichiers locaux, même tant qu'aucune version enregistrée ne les
+   référence (modification d'un rapport déjà envoyé). */
+watchLivePhotos(() => (draft?.photos || []).map(p => p.localId).filter(Boolean));
 let dirty = false;
 let resumed = false;       // saisie reprise d'un brouillon
 let paintedCap = null;     // quota de palettes du dernier rendu des pressions
@@ -563,7 +567,7 @@ function wire() {
       try { blob = await compressImage(file); }
       catch (e) { toast(e.message, 'err'); continue; }
       const localId = crypto.randomUUID();
-      await local.put('photos', { id: localId, blob });
+      await local.put('photos', { id: localId, blob, at: Date.now() });   // `at` : voir le délai de grâce du ménage
       draft.photos.push({ localId, path: `${draft.id}/${localId}.jpg`, uploaded: false, at: Date.now() });
       touch();
     }
@@ -1083,7 +1087,11 @@ async function paintPhotos() {
          l'indice désignait alors la mauvaise. */
       const at = draft.photos.indexOf(p);
       if (at < 0) return;
-      if (p.localId) await local.del('photos', p.localId);
+      /* Sur un brouillon, le fichier part tout de suite. Sur un rapport
+         déjà enregistré, il reste jusqu'à l'enregistrement : quitter sans
+         enregistrer doit rendre la photo intacte, et la version
+         enregistrée la référence encore (le ménage s'en chargera). */
+      if (p.localId && draft._draft) await local.del('photos', p.localId);
       draft.photos.splice(at, 1); touch(); paintPhotos();
     };
     grid.appendChild(cell);

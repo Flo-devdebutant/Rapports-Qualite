@@ -195,6 +195,7 @@ body.has-actions main{padding-bottom:calc(var(--act-h) + 28px + var(--safe-b))}
 .rail-sync:hover{background:var(--hover)}
 .rail-sync .dt{width:8px;height:8px;border-radius:50%;background:var(--ok);flex:0 0 8px}
 .rail-sync.pending .dt{background:var(--warn)} .rail-sync.off .dt{background:var(--ink-3)}
+.rail-sync.err .dt{background:var(--fail)} .rail-sync.err .tx,.sync.err .tx{color:var(--fail-ink)}
 .rail-user{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:12px;color:var(--ink)}
 .rail-user:hover{background:var(--hover)}
 .rail-user .tx b{display:block;font-size:13.5px;line-height:1.2}
