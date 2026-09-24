@@ -7,7 +7,7 @@
    cinq écrans.
    ------------------------------------------------------------------ */
 
-import { state, shell, groupById, go, back } from './app.js';
+import { state, shell, groupById, go, back, onLeave, openNew } from './app.js';
 import { local, queue, sync, forgetPhotos, holdReport, releaseReport } from './store.js';
 import { flatFields, computeSummary, applyComputed, fieldRole, PRESSURE_ROLES,
          judgeContext, statusIn, autoFilled,
@@ -15,7 +15,7 @@ import { flatFields, computeSummary, applyComputed, fieldRole, PRESSURE_ROLES,
 import { COUNTRIES_FR, countryName } from './countries.js';
 import { importJournal, recordsForLot, recentLots, lotModel, lotNumber, journalInfo } from './journal.js';
 import { defectTypes, palletDefects, palletUnder, receptionStats, pressureRequired, samplingCfg,
-         defectLinkedKeys, fmtPct, KPI_TONE } from './reception.js';
+         defectLinkedKeys, fmtPct, KPI_TONE, palletOverCounts, sampleFor } from './reception.js';
 import { pressureConfig, palletStats, lotStats, hasPressures, fmtP,
          palletWeighing, calibreMin, needsBox, sizeTableOf, fmtG,
          refSpec, partnerRef, palletSeverity, refText, outOfZone,
@@ -23,7 +23,8 @@ import { pressureConfig, palletStats, lotStats, hasPressures, fmtP,
 import { pressureChartSVG } from './pressure-chart.js';
 import { reportType, PACKAGING_KINDS, appliesTo, isHidden, fieldLive,
          badPallets, badPalletsText, splitPallets } from './report-types.js';
-import { $, $$, esc, icon, toast, confirmSheet, compressImage, stars, pickSheet } from './ui.js';
+import { $, $$, esc, icon, toast, confirmSheet, compressImage, stars, pickSheet, sheet } from './ui.js';
+import { wireJump } from './reports.js';
 import { currentUser, storage } from './supa.js';
 
 let draft = null;          // rapport en cours d'édition
@@ -41,7 +42,7 @@ export async function renderForm({ type, id, fresh = false }) {
   if (!state.groups.length) {
     return shell('Rapport', `<div class="empty"><div class="big">📦</div>
       <p>Aucun groupe de produit n'est encore défini.<br>
-      Un administrateur doit les créer dans Réglages &gt; Produits &amp; critères.</p></div>`,
+      Un administrateur ou un responsable doit les créer dans Réglages &gt; Produits &amp; critères.</p></div>`,
       { back: () => back('#/') });
   }
   if (id) {
@@ -110,32 +111,42 @@ function paint() {
   draft.measures = applyComputed(group, draft.measures, draft.header.pressures, draft.type);
   draft.summary = computeSummary(group, draft.measures, draft.header.pressures, draft.type);
   const s = draft.summary;
+  const secs = (group?.config?.sections || []).filter(sec => !isHidden(sec) && appliesTo(sec, draft.type))
+    .map(sec => ({ sec, html: sectionHtml(sec) })).filter(x => x.html);
+  const nPal = draft.header.pressures?.pallets?.length || 0;
+
+  /* Plan de la saisie : une puce par section, avec ce qui est rempli.
+     On y saute d'un appui au lieu de faire défiler vingt critères. */
+  const nav = [
+    ['sec-general', 'Général', ''],
+    ...secs.map(({ sec }) => [gridSecId(sec), sec.label, countOf(sec)]),
+    ['prSec', T.weights ? 'Palettes' : 'Pressions', nPal ? String(nPal) : ''],
+    ['sec-rem', 'Remarques', ''],
+    ['sec-photos', 'Photos', draft.photos.length ? String(draft.photos.length) : '']
+  ];
 
   shell(T.title, `
    <div class="form-wrap">
     <!-- Verdict, calculé en direct : l'inspecteur voit tout de suite
-         l'effet de chaque mesure, il n'a pas à attendre la validation.
-         Collant en haut sur téléphone, en colonne de droite sur
-         ordinateur — où il reste visible sans voler de hauteur. -->
-    <aside class="form-side"><div class="card pad stick" id="verdict">${verdictHtml(s)}</div></aside>
+         l'effet de chaque mesure. Sur téléphone, il vit dans la barre du
+         bas, à côté d'Enregistrer ; sur ordinateur, en tête de la
+         colonne de droite, avec le plan de la saisie. -->
+    <aside class="form-side">
+      <div class="card pad side-verdict" id="verdict">${verdictHtml(s)}</div>
+      <nav class="jump" id="fJump" aria-label="Sections du rapport"><span class="jt">Sections</span>${nav.map(([id, label, n]) =>
+        `<a href="#${id}" data-to="${id}" id="nav-${id}">${esc(label)} <span class="n${fullCount(n) ? ' full' : ''}">${esc(n)}</span></a>`).join('')}</nav>
+    </aside>
     <div class="form-main">
-    ${resumed ? `<div class="resume-box">
-      <span>Brouillon repris — saisie enregistrée automatiquement.</span>
+    ${resumed ? `<div class="resume-box">${icon('clock')}
+      <span>Brouillon repris — la saisie s'enregistre au fil de l'eau.</span>
       <button type="button" class="linkish" id="freshStart">Repartir d'un rapport vierge</button>
     </div>` : ''}
 
-    <details class="sec" open>
+    <details class="sec" open id="sec-general">
       <summary>Général ${caret()}</summary>
       <div class="body grid2">
         ${T.journal ? journalBoxHtml() : ''}
-        <div class="field"><label for="fdate">Date et heure du contrôle</label>
-          <input type="datetime-local" id="fdate" value="${toLocalInput(draft.report_date)}"></div>
-
-        <div class="field"><label for="fgroup">Groupe de produit</label>
-          <select id="fgroup">${choices.map(g =>
-            `<option value="${esc(g.id)}"${g.id === draft.product_group_id ? ' selected' : ''}>${esc(g.config?.icon || '')} ${esc(g.name)}</option>`).join('')}
-          </select></div>
-
+        <div class="sub-h">Identification</div>
         <div class="field span2"><label for="fpartner">${T.partnerLabel}</label>
           <input type="text" id="fpartner" list="partnerList" placeholder="Nom du ${T.partnerLabel.toLowerCase()}"
                  value="${esc(draft.partner_name || '')}" autocomplete="off">
@@ -145,13 +156,35 @@ function paint() {
           <div class="hint">Un nouveau nom est ajouté au carnet à l'enregistrement.</div></div>
 
         <div class="row2">
-          <div class="field"><label for="fdept">Département / dépôt</label>
-            <input type="text" id="fdept" list="deptList" value="${esc(draft.header.department || '')}">
-            <datalist id="deptList">${(state.settings.departments || []).map(d => `<option value="${esc(d)}">`).join('')}</datalist></div>
+          <div class="field"><label for="fgroup">Produit</label>
+            <select id="fgroup">${choices.map(g =>
+              `<option value="${esc(g.id)}"${g.id === draft.product_group_id ? ' selected' : ''}>${esc(g.config?.icon || '')} ${esc(g.name)}</option>`).join('')}
+            </select></div>
           <div class="field"><label for="fvariety">Variété</label>
             <input type="text" id="fvariety" list="varList" value="${esc(draft.header.variety || '')}">
             <datalist id="varList">${(group?.config?.varieties || []).map(v => `<option value="${esc(v)}">`).join('')}</datalist></div>
         </div>
+
+        <div class="field span2"><label for="fdate">Date du contrôle</label>
+          <input type="datetime-local" id="fdate" value="${toLocalInput(draft.report_date)}"></div>
+
+        <!-- À la réception on trace le lot fournisseur ; en expédition
+             comme en production, c'est le bon de livraison. Le lot de
+             réception, lui, est en tête : c'est lui qui remplit tout. -->
+        <div class="row2">
+          ${T.journal ? '' : `<div class="field"><label for="flot">${T.refLabel}</label>
+            <input type="text" id="flot" value="${esc(draft.header[T.refKey] || '')}"
+                   placeholder="${esc(T.refPlaceholder)}"></div>`}
+          <div class="field"><label for="fdept">Département / dépôt</label>
+            <input type="text" id="fdept" list="deptList" value="${esc(draft.header.department || '')}">
+            <datalist id="deptList">${(state.settings.departments || []).map(d => `<option value="${esc(d)}">`).join('')}</datalist></div>
+          ${T.journal ? catField(group) : ''}
+        </div>
+        ${T.journal ? '' : `<div class="row2">${catField(group)}${T.packaging ? `<div class="field"><label for="fpack">Conditionnement</label>
+            <select id="fpack"><option value="">—</option>
+              ${PACKAGING_KINDS.map(k =>
+                `<option${k === draft.header.packaging_kind ? ' selected' : ''}>${esc(k)}</option>`).join('')}
+            </select></div>` : ''}</div>`}
 
         <!-- Un même lot ou BL mélange couramment plusieurs calibres, et
              souvent plusieurs origines : l'origine appartient donc à la
@@ -159,66 +192,43 @@ function paint() {
              Palettisation se déduisent de ces lignes, ce qui évite une
              double saisie et permet de désigner précisément l'origine
              ou le calibre en cause dans une réclamation. -->
+        <div class="sub-h">Détail du lot</div>
         <div class="field span2">
-          <label>Détail du lot</label>
           <datalist id="calList">${(group?.config?.calibres || []).map(v => `<option value="${esc(v)}">`).join('')}</datalist>
           <div id="calRows"></div>
-          <button type="button" class="btn ghost sm" id="calAdd" style="margin-top:8px">${icon('plus')} Ajouter une ligne</button>
+          <button type="button" class="btn ghost sm" id="calAdd">${icon('plus')} Ajouter une ligne</button>
           <div class="hint" id="calSum"></div>
         </div>
 
-        <div class="${T.voyage ? 'row2' : 'field'}">
-          <div class="field"><label for="fcarrier">Transporteur</label>
-            <input type="text" id="fcarrier" list="carrierList" autocomplete="off"
-                   value="${esc(draft.header.carrier || '')}" placeholder="Nom du transporteur">
-            <datalist id="carrierList">${state.partners
-              .filter(p => p.kind === 'transporteur')
-              .map(p => `<option value="${esc(p.name)}">`).join('')}</datalist></div>
-          ${T.voyage ? `
-          <!-- Le n° de voyage identifie l'acheminement chez le
-               transporteur ; il n'a de sens qu'à l'arrivée. -->
-          <div class="field"><label for="fload">N° de Voyage</label>
+        <div class="sub-h">Transport</div>
+        <div class="field span2"><label for="fcarrier">Transporteur</label>
+          <input type="text" id="fcarrier" list="carrierList" autocomplete="off"
+                 value="${esc(draft.header.carrier || '')}" placeholder="Nom du transporteur">
+          <datalist id="carrierList">${state.partners
+            .filter(p => p.kind === 'transporteur')
+            .map(p => `<option value="${esc(p.name)}">`).join('')}</datalist></div>
+        ${T.voyage || isRec ? `
+        <!-- Le n° de voyage identifie l'acheminement chez le
+             transporteur ; il n'a de sens qu'à l'arrivée. La date du quai
+             et le camion, repris du journal, figurent en tête du rapport
+             envoyé au fournisseur. -->
+        <div class="row2">
+          ${T.voyage ? `<div class="field"><label for="fload">N° de Voyage</label>
             <input type="text" id="fload" value="${esc(draft.header.voyage || draft.header.load_id || '')}"></div>` : ''}
-        </div>
-
-        ${isRec ? `
-        <!-- La date du quai et le camion : repris du journal, ils
-             figurent en tête du rapport envoyé au fournisseur. -->
-        <div class="row2">
-          <div class="field"><label for="farr">Date de réception</label>
-            <input type="datetime-local" id="farr" value="${esc((draft.header.arrival || '').slice(0, 16))}"></div>
-          <div class="field"><label for="ftruck">N° de camion</label>
-            <input type="text" id="ftruck" value="${esc(draft.header.truck || '')}"></div>
+          ${isRec ? `<div class="field"><label for="ftruck">N° de camion</label>
+            <input type="text" id="ftruck" value="${esc(draft.header.truck || '')}"></div>` : ''}
         </div>` : ''}
-
-        <div class="row2">
-          <!-- À la réception on trace le lot fournisseur ; en expédition
-               comme en production, c'est le bon de livraison. Le lot de
-               réception, lui, est en tête : c'est lui qui remplit tout. -->
-          ${T.journal ? '' : `<div class="field"><label for="flot">${T.refLabel}</label>
-            <input type="text" id="flot" value="${esc(draft.header[T.refKey] || '')}"
-                   placeholder="${esc(T.refPlaceholder)}"></div>`}
-          <div class="field"><label for="fcat">Catégorie</label>
-            <select id="fcat"><option value="">—</option>
-              ${(group?.config?.categories || ['Extra','I','II']).map(c =>
-                `<option${c === draft.header.category ? ' selected' : ''}>${esc(c)}</option>`).join('')}
-            </select></div>
-        </div>
-
-        ${T.packaging ? `
-        <div class="field"><label for="fpack">Conditionnement</label>
-          <select id="fpack"><option value="">—</option>
-            ${PACKAGING_KINDS.map(k =>
-              `<option${k === draft.header.packaging_kind ? ' selected' : ''}>${esc(k)}</option>`).join('')}
-          </select></div>` : ''}
+        ${isRec ? `<div class="field span2"><label for="farr">Date de réception</label>
+            <input type="datetime-local" id="farr" value="${esc((draft.header.arrival || '').slice(0, 16))}"></div>` : ''}
 
         <!-- Une seule palette ne suffisait pas : un conteneur peut en
              avoir trois de travers, et on ne pouvait en signaler
              qu'une. La saisie accepte donc plusieurs numéros, et le
              NOMBRE se déduit — c'est lui qui pèse dans le résumé, le
              détail servant à nommer les palettes au fournisseur. -->
-        <div class="field span2"><label for="fbad">Palettes problématiques</label>
-          <input type="text" id="fbad" inputmode="text" autocomplete="off"
+        <div class="sub-h">Palettes problématiques</div>
+        <div class="field span2">
+          <input type="text" id="fbad" inputmode="text" autocomplete="off" aria-label="Palettes problématiques"
             value="${esc(badPallets(draft.header).join(', '))}"
             placeholder="N° des palettes en cause, séparés par des virgules">
           <div class="chips" id="badPick" style="margin-top:8px"></div>
@@ -226,29 +236,27 @@ function paint() {
       </div>
     </details>
 
-    ${(group?.config?.sections || [])
-        .filter(sec => !isHidden(sec) && appliesTo(sec, draft.type))
-        .map(sec => sectionHtml(sec)).join('')}
+    ${secs.map(x => x.html).join('')}
 
-    <!-- Optionnel : le relevé au pénétromètre, palette par palette.
-         Le lot arrive le plus souvent homogène à la pression de
-         référence ; le bouton de remplissage traite ce cas en un geste
-         et la saisie manuelle sert aux palettes qui sortent du lot. -->
+    <!-- Le relevé au pénétromètre, palette par palette. Le lot arrive le
+         plus souvent homogène à la pression de référence ; le bouton de
+         remplissage traite ce cas en un geste et la saisie manuelle sert
+         aux palettes qui sortent du lot. -->
     <details class="sec" id="prSec" ${hasPressures(draft.header) || req || draft.header.pressures?.pallets?.length ? 'open' : ''}>
-      <summary>${T.weights ? 'Contrôle par palette' : 'Pressions'}${req ? ' <span class="pill sm">obligatoire</span>' : ''}
+      <summary>${T.weights ? 'Contrôle par palette' : 'Pressions'}${req ? ' <span class="pill sm brand">obligatoire</span>' : ''}
         <span class="count" id="prCount"></span> ${caret()}</summary>
       <div class="body" id="prBody"></div>
     </details>
 
-    <details class="sec" open>
+    <details class="sec" open id="sec-rem">
       <summary>Remarques ${caret()}</summary>
       <div class="body">
-        <textarea id="fremarks" placeholder="Observations libres — reprises telles quelles dans le PDF.">${esc(draft.remarks || '')}</textarea>
+        <textarea id="fremarks" aria-label="Remarques" placeholder="Observations libres — reprises telles quelles dans le PDF.">${esc(draft.remarks || '')}</textarea>
       </div>
     </details>
 
-    <details class="sec" open>
-      <summary>Photos <span class="count" id="phCount">${draft.photos.length}</span> ${caret()}</summary>
+    <details class="sec" open id="sec-photos">
+      <summary>Photos <span class="count" id="phCount">${draft.photos.length || ''}</span> ${caret()}</summary>
       <div class="body">
         <div class="photo-grid" id="photos"></div>
         <!-- Deux champs distincts plutôt qu'un seul : sans l'attribut
@@ -264,36 +272,74 @@ function paint() {
     </div>
    </div>
 
-    <div class="sticky-actions">
-      <button class="btn ghost" id="cancel">Annuler</button>
-      <button class="btn" id="save">Enregistrer</button>
+    <div class="sticky-actions form-actions">
+      <button type="button" class="vmini" id="vMini" aria-label="Détail du verdict">${vMiniHtml(s)}</button>
+      <button class="btn ghost" id="cancel">Fermer</button>
+      <button class="btn" id="save">${icon('check')} Enregistrer</button>
     </div>`,
-    { back: () => leave(), onMount: wire });
+    { back: () => leave(), sub: subLine(), onMount: wire });
 }
 
-const caret = () => `<span class="caret">▾</span>`;
+const caret = () => `<span class="caret">${icon('chevD')}</span>`;
 
+const catField = (group) => `<div class="field"><label for="fcat">Catégorie</label>
+  <select id="fcat"><option value="">—</option>
+    ${(group?.config?.categories || ['Extra','I','II']).map(c =>
+      `<option${c === draft.header.category ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+  </select></div>`;
+
+/* Sous le titre : de quoi parle ce rapport, et que la saisie est
+   gardée. On sait ainsi, en revenant sur l'écran, où l'on en est. */
+function subLine() {
+  const bits = [draft.partner_name, draft.header.lot ? 'lot ' + draft.header.lot : draft.header.bl ? 'BL ' + draft.header.bl : ''].filter(Boolean);
+  if (!draft._draft) return esc(['Modification', draft.report_no ? 'n° ' + draft.report_no : '', ...bits].filter(Boolean).join(' · '));
+  return esc([...bits, 'brouillon gardé sur l\'appareil'].filter(Boolean).join(' · '));
+}
+
+/* « 3/8 » d'une section, et s'il est complet. */
+function countOf(sec) {
+  const fs = (sec.fields || []).filter(f => fieldLive(sec, f, draft.type));
+  const done = fs.filter(f => draft.measures[f.key] !== undefined && draft.measures[f.key] !== '').length;
+  return `${done}/${fs.length}`;
+}
+const fullCount = (n) => { const m = /^(\d+)\/(\d+)$/.exec(n || ''); return !!m && +m[2] > 0 && m[1] === m[2]; };
+
+/* Met à jour le décompte d'une section : son en-tête et sa puce du plan. */
+function setCount(secEl, text) {
+  const c = secEl?.querySelector(':scope > summary .count');
+  if (c) { c.textContent = text; c.classList.toggle('full', fullCount(text)); }
+  const n = secEl?.id ? document.querySelector(`#nav-${CSS.escape(secEl.id)} .n`) : null;
+  if (n) { n.textContent = text; n.classList.toggle('full', fullCount(text)); }
+}
+
+/* Le verdict complet : colonne de droite sur ordinateur, feuille sur
+   téléphone (appui sur la vignette de la barre du bas). */
 function verdictHtml(s) {
   if (s.pending) {
-    return `<div class="muted" style="display:flex;align-items:center;gap:9px">
-      <span class="dot none"></span>
-      Le verdict apparaîtra ici dès la première mesure saisie.</div>`;
+    return `<div class="card-h" style="margin-bottom:6px"><h3>Verdict</h3></div>
+      <div class="muted" style="display:flex;align-items:center;gap:10px"><span class="dot none"></span>
+      Il apparaîtra ici dès la première mesure saisie.</div>`;
   }
-  const p = (label, value, cls) =>
-    `<div style="flex:1;min-width:90px"><div class="muted" style="font-size:11px">${label}</div>
-     <span class="pill ${cls}" style="margin-top:4px">${esc(value)}</span></div>`;
-  return `
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">
-      ${p('Qualité', s.quality, QUALITY_STATUS[s.quality])}
-      ${p('Conservabilité', s.shelf, SHELF_STATUS[s.shelf])}
-      ${p('Évaluation', s.verdict, VERDICT_STATUS[s.verdict])}
-      <div style="flex:1;min-width:90px"><div class="muted" style="font-size:11px">%NC</div>
-        <div style="font-weight:700;font-size:17px;margin-top:2px">${s.nc == null ? '—' : s.nc + ' %'}</div></div>
+  const d = (cls) => `<span class="dot ${cls || 'none'}"></span>`;
+  const st = VERDICT_STATUS[s.verdict] || '';
+  return `<div class="vfull">
+    <div class="card-h" style="margin-bottom:10px"><h3>Verdict</h3>${stars(s.stars)}</div>
+    <div class="verdict ${st}" style="margin-top:0">${d(st)}<span class="vt"><b>${esc(s.verdict)}</b>
+      <span>%NC ${s.nc == null ? '—' : s.nc + ' %'} · tolérance ${s.tolerance} %</span></span></div>
+    <div class="vgrid" style="margin-top:10px">
+      <div><span>Qualité</span><b>${d(QUALITY_STATUS[s.quality])}${esc(s.quality || '—')}</b></div>
+      <div><span>Conservabilité</span><b>${d(SHELF_STATUS[s.shelf])}${esc(s.shelf || '—')}</b></div>
     </div>
-    <div style="margin-top:10px;display:flex;align-items:center;gap:10px">
-      ${stars(s.stars)}
-      <span class="muted">tolérance ${s.tolerance} % · ${s.fails} hors seuil · ${s.warns} à surveiller</span>
-    </div>`;
+    <div class="vline"><span>${s.fails} hors seuil</span><span>· ${s.warns} à surveiller</span></div>
+  </div>`;
+}
+
+/* La vignette de la barre du bas : le mot du verdict et le %NC. */
+function vMiniHtml(s) {
+  if (s.pending) return `<span class="dot none"></span><span class="tx"><b>Verdict</b><small>à la première mesure</small></span>`;
+  const st = VERDICT_STATUS[s.verdict] || '';
+  return `<span class="dot ${st || 'none'}"></span><span class="tx"><b>${esc(s.verdict)}</b><small>${
+    esc([`%NC ${s.nc == null ? '—' : s.nc + ' %'}`, s.quality, s.shelf].filter(Boolean).join(' · '))}</small></span>`;
 }
 
 function sectionHtml(sec) {
@@ -302,19 +348,31 @@ function sectionHtml(sec) {
      section qui n'en montre que trois. */
   const fields = (sec.fields || []).filter(f => fieldLive(sec, f, draft.type));
   if (!fields.length) return '';
-  const done = fields.filter(f => draft.measures[f.key] !== undefined && draft.measures[f.key] !== '').length;
+  const n = countOf(sec);
   const ctx = formCtx();
-  return `<details class="sec"${done ? ' open' : ''} data-sec="${esc(sec.id)}">
-    <summary>${esc(sec.label)} <span class="count">${done}/${fields.length}</span> ${caret()}</summary>
+  return `<details class="sec"${/^0\//.test(n) ? '' : ' open'} id="${esc(gridSecId(sec))}" data-sec="${esc(sec.id)}">
+    <summary>${esc(sec.label)} <span class="count${fullCount(n) ? ' full' : ''}">${n}</span> ${caret()}</summary>
     <div class="body crits">${fields.map(f => fieldHtml(f, ctx)).join('')}</div>
   </details>`;
 }
+
+/* Identifiant d'une section de la grille dans la page. Préfixe distinct
+   de celui des blocs fixes (sec-general, sec-rem, sec-photos) : une
+   section nommée « Photos » ou « Général » par un administrateur aurait
+   sinon pris l'identifiant du bloc du même nom. */
+const gridSecId = (sec) => 'grid-' + String(sec.id || '').replace(/[^\w-]/g, '_');
 
 /* Contexte de jugement du rapport en cours : le même que celui du
    verdict. Une pastille calculée à part pouvait afficher un défaut que
    le verdict, lui, ne comptait pas. */
 const formCtx = (group = groupById(draft.product_group_id)) =>
   judgeContext(group, draft.header.pressures, draft.type);
+
+/* Une liste courte se choisit d'une touche, en puces ; une liste longue
+   garde son menu déroulant. Un menu, c'est deux gestes et un défilement
+   pour « Bonne / Acceptable / Mauvaise » — dix fois par rapport. */
+const asChips = (f) => (f.options || []).length <= 6 &&
+  (f.options || []).reduce((n, o) => n + String(o.v).length, 0) <= 90;
 
 function fieldHtml(f, ctx = formCtx()) {
   const v = draft.measures[f.key];
@@ -329,26 +387,33 @@ function fieldHtml(f, ctx = formCtx()) {
   const auto = autoFilled(groupById(draft.product_group_id), f, draft.header.pressures, draft.type);
   const hint = auto ? '<small>Repris du contrôle par palette</small>'
                     : (f.hint ? `<small>${esc(f.hint)}</small>` : '');
-  const label = `<span class="lb">${esc(f.label)}${f.unit && f.type !== 'choice' && f.type !== 'bool' ? ` <span class="muted">(${esc(f.unit)})</span>` : ''}${hint}</span>`;
+  const label = `<span class="lb">${esc(f.label)}${hint}</span>`;
 
   if (f.type === 'bool') {
     return `<div class="crit" data-key="${esc(f.key)}">${dot}${label}
-      <span class="in"><span class="seg yn">
-        <button type="button" data-v="1" aria-pressed="${v === true}">Conf.</button>
+      <span class="in yn-in"><span class="seg yn">
+        <button type="button" data-v="1" aria-pressed="${v === true}">Conforme</button>
         <button type="button" data-v="0" aria-pressed="${v === false}">Non</button>
       </span></span></div>`;
   }
   if (f.type === 'choice') {
+    if (asChips(f)) {
+      return `<div class="crit wide" data-key="${esc(f.key)}">${dot}${label}
+        <span class="in"><span class="choice" role="group" aria-label="${esc(f.label)}">${f.options.map(o =>
+          `<button type="button" class="chip" data-c="${esc(o.v)}" aria-pressed="${o.v === v}"${auto ? ' disabled' : ''}>${esc(o.v)}</button>`).join('')}
+        </span></span></div>`;
+    }
     return `<div class="crit wide" data-key="${esc(f.key)}">${dot}${label}
-      <span class="in"><select${auto ? ' disabled' : ''}><option value="">—</option>
+      <span class="in"><select${auto ? ' disabled' : ''} aria-label="${esc(f.label)}"><option value="">—</option>
         ${f.options.map(o => `<option value="${esc(o.v)}"${o.v === v ? ' selected' : ''}>${esc(o.v)}</option>`).join('')}
       </select></span></div>`;
   }
   const computed = !!f.computed;
+  /* L'unité vit dans la case, à droite du chiffre : « 12 % », « 4,2 °C ». */
   return `<div class="crit" data-key="${esc(f.key)}">${dot}${label}
-    <span class="in"><input type="number" inputmode="decimal" step="${f.step || 0.01}"
-      value="${v ?? ''}" placeholder="—"${computed ? ' data-computed="1"' : ''}${
-      auto ? ' readonly data-auto="1"' : ''}></span></div>`;
+    <span class="in${f.unit ? ' u' : ''}"><input type="number" inputmode="decimal" step="${f.step || 0.01}" enterkeyhint="next"
+      value="${v ?? ''}" placeholder="—" aria-label="${esc(f.label)}"${computed ? ' data-computed="1"' : ''}${
+      auto ? ' readonly data-auto="1"' : ''}>${f.unit ? `<i>${esc(f.unit)}</i>` : ''}</span></div>`;
 }
 
 /* --------------------------- interactions --------------------------- */
@@ -456,6 +521,15 @@ function wire() {
     const sel = row.querySelector('select');
     if (sel) sel.onchange = () => { draft.measures[key] = sel.value; touch(); refresh(key); };
 
+    /* Choix en puces : un appui choisit, un second appui efface. */
+    row.querySelectorAll('.choice [data-c]').forEach(b => b.onclick = () => {
+      const val = b.dataset.c;
+      draft.measures[key] = draft.measures[key] === val ? '' : val;
+      row.querySelectorAll('.choice [data-c]').forEach(x =>
+        x.setAttribute('aria-pressed', String(x.dataset.c === draft.measures[key])));
+      touch(); refresh(key);
+    });
+
     row.querySelectorAll('.seg.yn button').forEach(b => b.onclick = () => {
       const val = b.dataset.v === '1';
       draft.measures[key] = draft.measures[key] === val ? '' : val;
@@ -503,6 +577,42 @@ function wire() {
 
   $('#cancel').onclick = () => leave();
   $('#save').onclick = save;
+  $('#vMini').onclick = () => sheet('', verdictHtml(draft.summary));
+  wireJump('fJump', '.form-main > details.sec');
+
+  /* Quitter l'écran par le rail, le bouton retour du téléphone ou la
+     feuille « Nouveau » : la dernière frappe (moins de 600 ms) part
+     quand même dans le brouillon. */
+  onLeave(() => { keepDraftNow(); });
+
+  /* Un rapport déjà enregistré n'a pas de brouillon où se replier : le
+     rail de l'ordinateur pose la même question que la flèche retour. */
+  document.querySelector('.rail')?.addEventListener('click', (e) => {
+    const a = e.target.closest('a[href^="#"], [data-new]');
+    if (!a || !dirty || draft?._draft) return;
+    e.preventDefault(); e.stopPropagation();
+    confirmSheet('Quitter sans enregistrer', 'Ce rapport est déjà enregistré : les modifications en cours seront perdues.',
+      { okLabel: 'Quitter' }).then(yes => {
+        if (!yes) return;
+        dirty = false;
+        if (a.hasAttribute('data-new')) openNew(); else location.hash = a.getAttribute('href');
+      });
+  }, true);
+
+  let raf = 0;
+  const onScroll = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; spyPallets(); }); };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onLeave(() => window.removeEventListener('scroll', onScroll));
+
+  /* Au clavier, Entrée passe au critère suivant, comme « Suivant » sur
+     un téléphone : on remplit une grille sans lâcher le clavier. */
+  $('.form-main').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || !e.target.matches('.crit input[type=number]')) return;
+    e.preventDefault();
+    const all = $$('.form-main .crit input[type=number]:not([readonly])').filter(x => x.offsetParent);
+    const next = all[all.indexOf(e.target) + 1];
+    if (next) { next.focus(); next.select?.(); } else e.target.blur();
+  });
 }
 
 /* --------------------- journal des arrivages ---------------------
@@ -519,7 +629,7 @@ function journalBoxHtml() {
     <label for="flot">N° de lot</label>
     <div class="jr-row">
       <input type="text" id="flot" list="lotList" autocomplete="off" inputmode="text"
-        value="${esc(draft.header.lot || '')}" placeholder="N° du lot, ex. 16886">
+        value="${esc(draft.header.lot || '')}" placeholder="ex. 16886">
       <button type="button" class="btn ghost sm" id="jPick">${icon('excel')} Journal</button>
     </div>
     <datalist id="lotList"></datalist>
@@ -665,7 +775,8 @@ async function applyLot(model) {
       v: o?.v || Array.from({ length: n }, () => ''),
       w: o?.w || Array.from({ length: p.fruits }, () => ''),
       d: o?.d || {},
-      ...(o?.chk != null && o.chk !== '' ? { chk: o.chk } : {})
+      ...(o?.chk != null && o.chk !== '' ? { chk: o.chk } : {}),
+      ...(o?.cut != null && o.cut !== '' ? { cut: o.cut } : {})
     };
   });
   const keep = badPallets(h).filter(x => names.has(x));
@@ -839,13 +950,8 @@ function refresh(changedKey) {
   }
   const sec = document.querySelector(`.crit[data-key="${CSS.escape(changedKey)}"]`)?.closest('details');
   if (sec) {
-    const id = sec.dataset.sec;
-    const def = group.config.sections.find(s => s.id === id);
-    if (def) {
-      const fs = (def.fields || []).filter(f => fieldLive(def, f, draft.type));
-      sec.querySelector('.count').textContent =
-        `${fs.filter(f => draft.measures[f.key] !== undefined && draft.measures[f.key] !== '').length}/${fs.length}`;
-    }
+    const def = group.config.sections.find(s => s.id === sec.dataset.sec);
+    if (def) setCount(sec, countOf(def));
   }
   refreshVerdict();
 }
@@ -868,6 +974,10 @@ function syncPressureFields() {
     const auto = autoFilled(group, f, draft.header.pressures, draft.type);
     const el = row.querySelector('input,select');
     const v = draft.measures[f.key];
+    row.querySelectorAll('.choice [data-c]').forEach(b => {
+      b.setAttribute('aria-pressed', String(b.dataset.c === v));
+      b.disabled = auto;
+    });
     if (el) {
       if (document.activeElement !== el) el.value = v ?? '';
       if (el.tagName === 'SELECT') el.disabled = auto;
@@ -893,11 +1003,7 @@ function syncPressureFields() {
 function refreshCounts(group) {
   for (const sec of document.querySelectorAll('details.sec[data-sec]')) {
     const def = (group?.config?.sections || []).find(s => s.id === sec.dataset.sec);
-    if (!def) continue;
-    const fs = (def.fields || []).filter(f => fieldLive(def, f, draft.type));
-    const done = fs.filter(f => draft.measures[f.key] !== undefined && draft.measures[f.key] !== '').length;
-    const c = sec.querySelector('.count');
-    if (c) c.textContent = `${done}/${fs.length}`;
+    if (def) setCount(sec, countOf(def));
   }
 }
 
@@ -913,6 +1019,11 @@ function refreshVerdict() {
   draft.summary = computeSummary(group, draft.measures, draft.header.pressures, draft.type);
   const box = $('#verdict');
   if (box) box.innerHTML = verdictHtml(draft.summary);
+  const vm = $('#vMini');
+  if (vm) {
+    vm.innerHTML = vMiniHtml(draft.summary);
+    vm.className = 'vmini ' + (draft.summary.pending ? '' : (VERDICT_STATUS[draft.summary.verdict] || ''));
+  }
   paintRecSummary();
 }
 
@@ -961,14 +1072,15 @@ async function paintPhotos() {
      galerie. Le contrôle se fait souvent appareil en main, mais le
      rapport se saisit après coup, au bureau — les deux chemins
      servent, et aucun ne doit demander de chercher où il est passé. */
-  for (const [id, ic, label] of [['#phCam', 'camera', 'Photo'], ['#phLib', 'image', 'Galerie']]) {
+  for (const [id, ic, label] of [['#phCam', 'camera', 'Prendre une photo'], ['#phLib', 'image', 'Galerie']]) {
     const add = document.createElement('button');
     add.type = 'button'; add.className = 'photo-add';
     add.innerHTML = `${icon(ic)}<span>${label}</span>`;
     add.onclick = () => $(id).click();
     grid.appendChild(add);
   }
-  const c = $('#phCount'); if (c) c.textContent = draft.photos.length;
+  const c = $('#phCount'); if (c) c.textContent = draft.photos.length || '';
+  const nv = document.querySelector('#nav-sec-photos .n'); if (nv) nv.textContent = draft.photos.length || '';
 }
 
 /* ------------------- palettes problématiques ------------------- */
@@ -1018,6 +1130,7 @@ function paintFlags() {
     card.classList.toggle('bad', bad);
     card.querySelector('[data-flag]')?.setAttribute('aria-pressed', String(bad));
   });
+  paintPalNav();
 }
 
 /* ------------------------------ brouillon ------------------------------
@@ -1068,7 +1181,10 @@ function keepDraft() {
 async function keepDraftNow() {
   clearTimeout(saveTimer);
   if (!draft || !draft._draft) return true;
-  if (!dirty && !draft._draftAt) return true;
+  /* Rien touché depuis l'ouverture : le brouillon enregistré est déjà
+     à jour. Le réécrire le datait « modifié à l'instant » et le faisait
+     remonter dans « En cours » alors qu'on n'avait fait que le relire. */
+  if (!dirty) return true;
   return writeDraft();
 }
 
@@ -1095,10 +1211,26 @@ function pressureGaps() {
   return '';
 }
 
+/* Un défaut ne peut pas toucher plus de fruits qu'on n'en a examinés
+   pour lui : 12 pourritures sur 10 fruits coupés, c'est une faute de
+   frappe, ou des fruits coupés en plus qu'il faut indiquer. */
+function defectGaps() {
+  if (draft.type !== 'reception') return '';
+  const group = groupById(draft.product_group_id);
+  for (const pl of draft.header.pressures?.pallets || []) {
+    const [o] = palletOverCounts(pl, group, defectTypes(group), lotCut());
+    if (!o) continue;
+    const what = o.def.where === 'int' && Number(lotCut()) > 0 ? 'fruits coupés' : 'fruits contrôlés';
+    return `Palette ${pl.n || '?'} : ${o.n} « ${o.def.label} » pour ${o.base} ${what}. ` +
+           `Corrigez le comptage${what === 'fruits coupés' ? ', ou le nombre de fruits coupés' : ''}.`;
+  }
+  return '';
+}
+
 async function save() {
   if (!draft.partner_name?.trim())
     return toast(`Indiquez le ${reportType(draft.type).partnerLabel.toLowerCase()}`, 'err');
-  const gap = pressureGaps();
+  const gap = pressureGaps() || defectGaps();
   if (gap) {
     const sec = $('#prSec');
     if (sec) { sec.open = true; sec.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
@@ -1184,11 +1316,12 @@ async function save() {
 
     dirty = false;
     sync({ silent: true });
-    toast(navigator.onLine ? 'Rapport enregistré' : 'Enregistré — envoi au retour du réseau');
+    /* Pas de message : la fiche s'ouvre sur « Rapport enregistré », avec
+       le PDF à portée de main (et l'état du réseau dit dans la feuille). */
     go('#/report/' + draft.id);
   } catch (e) {
     toast(e.message || 'Enregistrement impossible', 'err');
-    btn.disabled = false; btn.textContent = 'Enregistrer';
+    btn.disabled = false; btn.innerHTML = `${icon('check')} Enregistrer`;
   }
 }
 
@@ -1201,6 +1334,11 @@ function pressures() {
   const p = draft.header.pressures;
   if (!p.pallets.length) { p.fruits = cfg.fruits; p.sides = cfg.sides; p.unit = cfg.unit; }
   if (!p.mode) p.mode = 'target';
+  /* Fruits coupés par palette (défauts internes) : figés dans le
+     rapport à sa création, comme la grille. Un rapport déjà enregistré
+     sans ce nombre (d'avant la 3.2) garde son calcul d'origine. */
+  if (draft._draft && draft.type === 'reception' && (!(Number(p.cut) > 0) || !p.pallets.length))
+    p.cut = samplingCfg(groupById(draft.product_group_id)).cut;
   /* Le repli sur la référence du produit ne vaut qu'à la CRÉATION du
      bloc. Le réappliquer à chaque passage remettait 13 dans un champ
      que l'inspecteur venait d'effacer, tout en l'étiquetant « ajustée
@@ -1332,20 +1470,19 @@ function refHtml(p) {
           min="${LIMITS.min}" max="${LIMITS.max}" id="prMax" value="${p.rmax ?? ''}"></label>
         <span class="u">${esc(p.unit || 'kg')}</span>
       </div>
-      <p class="hint">Dans la plage : conforme. ${RANGE_TOL} point de débordement toléré ;
-         au-delà, l'écart est critique et la palette non conforme.</p>`
+      <p class="hint">Dans la plage : conforme · ${RANGE_TOL} point de débordement toléré · au-delà, écart critique.</p>`
     : `
       <div class="ref-in">
         <label>Cible <input type="number" inputmode="decimal" step="0.1"
           min="${LIMITS.min}" max="${LIMITS.max}" id="prRef" value="${p.ref ?? ''}"></label>
         <span class="u">${esc(p.unit || 'kg')}</span>
       </div>
-      <p class="hint">Écart toléré ${SEV_STEPS.ok} point ; jusqu'à ${SEV_STEPS.mineur} l'écart est mineur,
-         jusqu'à ${SEV_STEPS.majeur} majeur, au-delà critique.</p>`}
-    <p class="hint">Le pénétromètre mesure de ${LIMITS.min} à ${LIMITS.max} ${esc(p.unit || 'kg')} :
-       toute valeur hors de cet intervalle est ramenée à la borne.</p>
+      <p class="hint">Écart toléré ${SEV_STEPS.ok} point · mineur jusqu'à ${SEV_STEPS.mineur} · majeur jusqu'à ${SEV_STEPS.majeur} · au-delà critique.</p>`}
     <p class="hint" id="prSrc">${refSourceHtml(p)}</p>
-    ${s ? `<p class="hint">Le barème ne s'applique qu'à la moyenne de chaque palette, jamais à un fruit isolé.</p>` : ''}
+    <details><summary>Comment c'est jugé ?</summary>
+      <p>Le pénétromètre mesure de ${LIMITS.min} à ${LIMITS.max} ${esc(p.unit || 'kg')} : une valeur hors de cet intervalle est ramenée à la borne.</p>
+      ${s ? '<p>Le barème ne s\'applique qu\'à la moyenne de chaque palette, jamais à un fruit isolé.</p>' : ''}
+    </details>
   </div>`;
 }
 
@@ -1385,26 +1522,29 @@ function paintPressures() {
   const defs = draft.type === 'reception' ? defectTypes(grp) : [];
   const smp = samplingCfg(grp);
   body.innerHTML = `
-    <p class="muted" style="margin:0 0 10px">
-      ${p.fruits} fruit${p.fruits > 1 ? 's' : ''} prélevé${p.fruits > 1 ? 's' : ''} par palette,
-      ${p.sides} mesure${p.sides > 1 ? 's' : ''} de pression chacun${T.weights ? ', plus leur poids' : ''}
-      — soit ${n} relevé${n > 1 ? 's' : ''}${T.weights ? ` et ${p.fruits} pesée${p.fruits > 1 ? 's' : ''}` : ''} par palette.
-      ${req ? '<b>Obligatoire pour ce produit en réception.</b>' : 'Section facultative.'}</p>
-    ${defs.length ? `<p class="muted" style="margin:-4px 0 10px">Défauts comptés sur ${smp.boxes} colis ouverts par palette${
-      smp.perKg ? ` — le calibre donne le nombre de fruits d'un colis de ${String(smp.perKg).replace('.', ',')} kg`
-                : ' — le calibre donne le nombre de fruits du colis'}. Case vide = aucun fruit touché.</p>` : ''}
+    <div class="pr-intro">
+      <div>${icon('pallet')}<span><b>${p.fruits} fruit${p.fruits > 1 ? 's' : ''} par palette</b>, ${p.sides} mesure${
+        p.sides > 1 ? 's' : ''} de pression chacun${T.weights ? ' et son poids' : ''} — ${n} relevé${n > 1 ? 's' : ''}${
+        T.weights ? ` et ${p.fruits} pesée${p.fruits > 1 ? 's' : ''}` : ''} par palette.</span></div>
+      ${defs.length ? `<div>${icon('box')}<span><b>Défauts${Number(p.cut) > 0 ? ' externes' : ''} sur ${smp.boxes} colis ouverts</b> par palette${
+        smp.perKg ? ` (le calibre donne les fruits d'un colis de ${String(smp.perKg).replace('.', ',')} kg)`
+                  : ' (le calibre donne les fruits du colis)'}${Number(p.cut) > 0 && defs.some(t => t.where === 'int')
+          ? `, <b>défauts internes sur ${p.cut} fruits coupés</b>` : ''} — case vide = aucun fruit touché.</span></div>` : ''}
+      <div>${icon(req ? 'alert' : 'info')}<span>${req ? '<b>Obligatoire</b> pour ce produit en réception.' : 'Section facultative.'}</span></div>
+    </div>
     ${refHtml(p)}
-    <div class="btn-row" style="margin:12px 0">
-      <button type="button" class="btn ghost sm" id="prFill">
+    <div class="pr-tools">
+      <button type="button" class="btn tonal sm" id="prFill">
         ${icon('check')} Tout à ${fmtP(fillAt).replace('.0', '')} ${esc(p.unit || 'kg')}</button>
       <button type="button" class="btn ghost sm" id="prAdd"${full ? ' disabled' : ''}>${icon('plus')} Palette</button>
-      ${p.pallets.length ? `<button type="button" class="btn ghost sm" id="prClear">Tout effacer</button>` : ''}
+      ${p.pallets.length ? `<button type="button" class="btn ghost sm" id="prClear">${icon('trash')} Tout effacer</button>` : ''}
     </div>
-    ${cap ? `<p class="hint" style="margin:-4px 0 10px">${
+    ${cap ? `<p class="pr-quota">${
       full ? `Les ${cap} palettes annoncées dans le détail du lot sont toutes contrôlées.`
            : `${p.pallets.length} palette${p.pallets.length > 1 ? 's' : ''} sur les ${cap} annoncées${
                remainingText() ? ` — reste ${remainingText()}` : ''}.`}</p>` : ''}
     ${overText() ? `<div class="err-box" style="margin:0 0 10px">${esc(overText())}</div>` : ''}
+    ${p.pallets.length > 1 ? `<div class="pal-nav" id="palNav" aria-label="Aller à une palette"></div>` : ''}
     <div id="prList"></div>
     ${defs.length && p.pallets.length ? `<div class="rec-sum" id="recSum"></div>` : ''}
     ${p.pallets.length ? `<div class="card pad" style="margin-top:12px" id="prPreview"></div>` : ''}`;
@@ -1531,6 +1671,7 @@ function paintPressures() {
       refreshPalletAvg(card, p.pallets[i]);
       paintPressurePreview();
       refreshVerdict();
+      paintPalNav();
       };
     });
     card.querySelector('[data-del]').onclick = () => {
@@ -1550,7 +1691,7 @@ function paintPressures() {
     /* Informations de la palette (reprises du journal, corrigeables). */
     card.querySelectorAll('[data-pi]').forEach(inp => inp.oninput = () => {
       const pal = p.pallets[i], k = inp.dataset.pi;
-      pal[k] = inp.value === '' ? '' : (['boxKg', 'boxes', 'chk'].includes(k) ? Number(inp.value) : inp.value);
+      pal[k] = inp.value === '' ? '' : (['boxKg', 'boxes', 'chk', 'cut'].includes(k) ? Number(inp.value) : inp.value);
       touch();
       const main = card.querySelector('.pi-main');
       if (main) main.textContent = palletInfoLine(pal);
@@ -1575,9 +1716,61 @@ function paintPressures() {
 
   const c = $('#prCount');
   if (c) c.textContent = p.pallets.length ? `${p.pallets.length} palette${p.pallets.length > 1 ? 's' : ''}` : '';
+  const nv = document.querySelector('#nav-prSec .n'); if (nv) nv.textContent = p.pallets.length || '';
   paintPressurePreview();
   refreshVerdict();
   paintBadPick();
+  paintPalNav();
+}
+
+/* ------------------- plan des palettes -------------------
+   Vingt palettes, c'est vingt écrans de saisie. Une rangée de numéros
+   collée en haut de la section y mène d'un appui, et dit où l'on en
+   est : relevés complets (vert), commencés (orange), palette signalée
+   (cadre rouge), moyenne hors référence (point rouge). */
+const headH = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--head-h')) || 56;
+const jumpH = () => { const j = $('#fJump'); return j && getComputedStyle(j).position === 'sticky' ? j.offsetHeight : 0; };
+
+function paintPalNav() {
+  const nav = $('#palNav');
+  const p = draft?.header?.pressures;
+  if (!nav || !p) return;
+  const need = slots(p);
+  const bad = new Set(badPallets(draft.header));
+  const sp = spec();
+  nav.innerHTML = (p.pallets || []).map((pal, i) => {
+    const n = (pal.v || []).filter(v => v !== '' && v != null).length;
+    const st = palletStats(pal);
+    const sev = st ? palletSeverity(st.avg, sp) : null;
+    const name = String(pal.n ?? '').trim();
+    const state = n >= need ? 'complète' : n ? 'commencée' : 'à mesurer';
+    const cls = [n >= need ? 'done' : n ? 'part' : '', bad.has(name) ? 'bad' : '',
+                 sev && sev.level !== 'ok' ? 'off' : ''].filter(Boolean).join(' ');
+    return `<button type="button" class="${cls}" data-gp="${i}" title="Palette ${esc(name || String(i + 1))} — ${state}${
+      bad.has(name) ? ', signalée' : ''}${sev && sev.level !== 'ok' ? ', hors référence' : ''}">${i + 1}</button>`;
+  }).join('');
+  nav.querySelectorAll('[data-gp]').forEach(b => b.onclick = () => {
+    const card = document.querySelector(`.pal[data-i="${b.dataset.gp}"]`);
+    if (!card) return;
+    window.scrollTo({ top: card.getBoundingClientRect().top + window.scrollY - (headH() + jumpH() + nav.offsetHeight + 12), behavior: 'smooth' });
+  });
+  spyPallets();
+}
+
+/* La palette à l'écran s'allume dans la rangée. */
+function spyPallets() {
+  const nav = $('#palNav');
+  if (!nav) return;
+  const y = headH() + jumpH() + nav.offsetHeight + 24;
+  let cur = -1;
+  for (const card of document.querySelectorAll('#prList .pal')) {
+    const r = card.getBoundingClientRect();
+    if (r.top <= y && r.bottom > y) { cur = +card.dataset.i; break; }
+  }
+  nav.querySelectorAll('[data-gp]').forEach(b => b.classList.toggle('cur', +b.dataset.gp === cur));
+  const on = nav.querySelector('.cur');
+  if (on && (on.offsetLeft < nav.scrollLeft || on.offsetLeft + on.offsetWidth > nav.scrollLeft + nav.clientWidth))
+    nav.scrollTo({ left: on.offsetLeft - 48 });
 }
 
 /* Valeur du remplissage en un clic : la cible, ou le milieu de la
@@ -1904,20 +2097,47 @@ function palletInfoHtml(pal, group) {
   </details>`;
 }
 
+const lotCut = () => draft.header.pressures?.cut;
+
+/* Légende des défauts externes (ou de tous, sur un rapport d'avant
+   la 3.2, où chacun se rapporte aux fruits contrôlés). */
+const extCaption = (dd) => dd.checked
+  ? `nombre de fruits touchés, sur ${dd.checked} contrôlés`
+  : 'nombre de fruits contrôlés inconnu — renseignez-le dans les informations de la palette';
+
 function defectsHtml(pal, defs, group) {
-  const dd = palletDefects(pal, group, defs);
-  return `<div class="pal-cap">Défauts <span class="mini" data-dcap>${dd.checked
-      ? `nombre de fruits touchés, sur ${dd.checked} contrôlés`
-      : 'nombre de fruits contrôlés inconnu — renseignez-le dans les informations de la palette'}</span></div>
-    <div class="def-grid">${defs.map(t => `<label class="def ${t.kind === 'loss' ? 'loss' : 'light'}">
+  const dd = palletDefects(pal, group, defs, lotCut());
+  const cell = (t) => {
+    const base = sampleFor(t, dd), n = Number(pal.d?.[t.key]);
+    return `<label class="def ${t.kind === 'loss' ? 'loss' : 'light'}">
       <span>${esc(t.label)}</span>
       <input type="number" inputmode="numeric" step="1" min="0" data-d="${esc(t.key)}" enterkeyhint="next"
-        placeholder="0" value="${pal.d?.[t.key] ?? ''}" aria-label="${esc(t.label)}"></label>`).join('')}</div>
+        placeholder="0" value="${pal.d?.[t.key] ?? ''}" aria-label="${esc(t.label)}"${
+        base && n > base ? ' class="over"' : ''}></label>`;
+  };
+  const ext = defs.filter(t => t.where !== 'int'), int = defs.filter(t => t.where === 'int');
+  /* Rapport d'avant la 3.2, ou produit sans défaut interne : une seule
+     grille, rapportée aux fruits contrôlés. */
+  if (dd.legacy || !int.length) {
+    return `<div class="pal-cap">Défauts <span class="mini" data-dcap>${extCaption(dd)}</span></div>
+      <div class="def-grid">${defs.map(cell).join('')}</div>
+      <div class="pal-sum" data-psum>${palletSumHtml(pal, group, defs)}</div>`;
+  }
+  /* Les défauts internes se comptent sur les fruits coupés : 10 par
+     palette d'ordinaire, davantage à l'occasion — le nombre se corrige
+     ici même, là où on le lit. */
+  return `${ext.length ? `<div class="pal-cap">Défauts externes <span class="mini" data-dcap>${extCaption(dd)}</span></div>
+      <div class="def-grid">${ext.map(cell).join('')}</div>` : ''}
+    <div class="pal-cap cut-cap"><span>Défauts internes</span> <span class="mini">sur</span>
+      <input type="number" inputmode="numeric" step="1" min="1" class="cut-in" data-pi="cut"
+        value="${esc(pal.cut ?? '')}" placeholder="${esc(lotCut() ?? '')}" aria-label="Fruits coupés de la palette">
+      <span class="mini">fruits coupés</span></div>
+    <div class="def-grid">${int.map(cell).join('')}</div>
     <div class="pal-sum" data-psum>${palletSumHtml(pal, group, defs)}</div>`;
 }
 
 function palletSumHtml(pal, group, defs = defectTypes(group)) {
-  const dd = palletDefects(pal, group, defs);
+  const dd = palletDefects(pal, group, defs, lotCut());
   const un = palletUnder(pal, group, draft.header.pressures?.fruits);
   return [
     `ext. <b>${dd.ext}</b> · int. <b>${dd.int}</b>`,
@@ -1933,11 +2153,17 @@ function refreshPalletSum(card, pal) {
   const group = groupById(draft.product_group_id);
   const box = card.querySelector('[data-psum]');
   if (box) box.innerHTML = palletSumHtml(pal, group);
+  const dd = palletDefects(pal, group, [], lotCut());
   const cap = card.querySelector('[data-dcap]');
-  if (cap) {
-    const dd = palletDefects(pal, group, []);
-    cap.textContent = dd.checked ? `nombre de fruits touchés, sur ${dd.checked} contrôlés`
-      : 'nombre de fruits contrôlés inconnu — renseignez-le dans les informations de la palette';
+  if (cap) cap.textContent = extCaption(dd);
+  /* Plus de fruits touchés que de fruits examinés : la case le dit
+     tout de suite (l'enregistrement le refusera). */
+  for (const t of defectTypes(group)) {
+    const inp = card.querySelector(`[data-d="${CSS.escape(t.key)}"]`);
+    if (!inp) continue;
+    const base = sampleFor(t, dd), over = !!base && Number(inp.value) > base;
+    inp.classList.toggle('over', over);
+    inp.title = over ? `Plus que les ${base} fruits ${t.where === 'int' && !dd.legacy ? 'coupés' : 'contrôlés'}` : '';
   }
   const chk = card.querySelector('[data-pi="chk"]');
   if (chk) { const dd = palletDefects({ ...pal, chk: '' }, group, []); chk.placeholder = dd.checked ? String(dd.checked) : 'à saisir'; }
@@ -1962,6 +2188,7 @@ function paintRecSummary() {
       ${k('Pertes', rs.sampled ? fmtPct(rs.lossPct) + ' %' : '—', rs.sampled ? tone.loss : null)}
     </div>
     <p class="hint" style="margin:6px 0 0">Sur ${rs.checkedTotal || 0} fruits contrôlés${
+      rs.cutTotal ? ` et ${rs.cutTotal} fruits coupés` : ''}${
       rs.fruitsTotal ? ` (${rs.fruitsTotal.toLocaleString('fr-FR')} fruits dans le lot)` : ''} ·
       défauts externes ${rs.extCount} · internes ${rs.intCount}.</p>`;
 }

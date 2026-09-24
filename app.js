@@ -9,14 +9,14 @@ import { CONFIG } from './config.js';
 import { auth, db, currentUser } from './supa.js';
 import { local, sync, startAutoSync, onSync, pendingCount, openDB, forgetPhotos, forgetSharedJournal } from './store.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
-import { $, esc, icon, toast, closeSheets } from './ui.js';
+import { $, $$, esc, icon, toast, closeSheets, sheet, brandMark, initials } from './ui.js';
 import { logoDataUrl } from './logo.js';
-import { renderFeed, renderReportView } from './reports.js';
+import { renderFeed, refreshFeed, renderReportView, reportCard, paintThumbs, livePhotos, feedFilter, localDay } from './reports.js';
 import { renderForm, allDrafts } from './form.js';
-import { renderSettings, renderGroups, renderGroupEditor, renderPartners, renderUsers, renderAccount } from './settings.js';
+import { renderSettings, renderGroups, renderGroupEditor, renderPartners, renderUsers, renderAccount, roleLabel } from './settings.js';
 import { renderStats } from './stats.js';
 import { renderPhotoArchive } from './archive.js';
-import { TYPE_LIST } from './report-types.js';
+import { TYPE_LIST, reportType } from './report-types.js';
 
 export const state = {
   profile: null,
@@ -89,7 +89,11 @@ async function bootInner() {
     /* Ré-affichage sans relancer de synchronisation : passer par
        route() rappellerait renderFeed en mode « rafraîchir », donc
        une nouvelle synchro, donc un nouveau « done »… en boucle. */
-    if (s === 'done') { await loadRefs(); if (location.hash.startsWith('#/feed')) renderFeed({ refresh: false }); }
+    if (s === 'done') {
+      await loadRefs();
+      if (location.hash.startsWith('#/feed')) refreshFeed();
+      else if ((location.hash || '#/') === '#/' || location.hash === '#') refreshHome();
+    }
   });
   sync({ silent: true });
   window.addEventListener('hashchange', route);
@@ -114,7 +118,7 @@ export async function loadRefs() {
      vérifie d'abord auprès du serveur que la table est réellement
      vide — le cache local l'est aussi avant la première synchro, et
      semer sur cette seule foi écraserait des grilles existantes. */
-  if (!state.groups.length && navigator.onLine && state.profile?.role === 'admin') {
+  if (!state.groups.length && navigator.onLine && canManage()) {
     try {
       const existing = await db('product_groups').select('id').limit(1);
       if (!existing.length) {
@@ -138,56 +142,155 @@ export async function loadRefs() {
 
 export const groupById = (id) => state.groups.find(g => g.id === id) || null;
 
-/* ============================== CHROME ============================== */
-export function shell(title, body, { back = null, actions = '', onMount } = {}) {
+/* ============================== CHROME ==============================
+   Un seul cadre pour tous les écrans :
+     — sur téléphone, une barre du haut et, sur les quatre écrans
+       principaux, une barre d'onglets en bas (Accueil, Rapports,
+       Nouveau, Stats, Réglages). Un écran « poussé » — fiche, saisie,
+       sous-réglage — masque les onglets et montre la flèche retour :
+       c'est le schéma que tout le monde connaît sur son téléphone ;
+     — sur ordinateur, un rail de navigation à gauche, toujours là, et
+       une barre du haut alignée sur la colonne de contenu. L'ancienne
+       mise en page était un écran de téléphone étiré : titre collé au
+       bord gauche, contenu perdu au milieu, et pour passer du flux aux
+       statistiques il fallait repasser par l'accueil. */
+const NAV = [
+  { id: 'home',     hash: '#/',         icon: 'home',  label: 'Accueil' },
+  { id: 'feed',     hash: '#/feed',     icon: 'doc',   label: 'Rapports' },
+  { id: 'stats',    hash: '#/stats',    icon: 'chart', label: 'Statistiques', short: 'Stats' },
+  { id: 'settings', hash: '#/settings', icon: 'gear',  label: 'Réglages' }
+];
+/* Les rôles, en un seul endroit :
+     — admin : tout ;
+     — responsable (Responsable Murisserie) : tout, sauf les comptes
+       administrateur et responsable, qu'il ne peut ni modifier ni
+       attribuer ;
+     — inspecteur (Contrôleur Qualité) : crée et modifie ses rapports ;
+     — lecture : consulte et partage.
+   La base applique les mêmes règles (voir le README, section 7) :
+   l'écran ne fait que ne pas proposer ce qui serait refusé. */
+const myRole = () => state.profile?.role;
+export const canWrite = () => ['admin', 'responsable', 'inspecteur'].includes(myRole());
+export const canManage = () => ['admin', 'responsable'].includes(myRole());
+export const isAdmin = () => myRole() === 'admin';
+
+/* Ce qu'un écran veut faire en le quittant : retirer un écouteur de
+   défilement, par exemple. Sans ce ménage, chaque visite du formulaire
+   en ajoutait un de plus, qui continuait de tourner sur l'écran suivant. */
+const leaving = [];
+export const onLeave = (fn) => leaving.push(fn);
+function runLeave() { while (leaving.length) { try { leaving.pop()(); } catch (e) { /* écran déjà parti */ } } }
+
+let logoUrl = null;
+function paintLogos() {
+  const put = (u) => $$('img[data-logo]').forEach(l => { if (u) l.src = u; });
+  if (logoUrl) return put(logoUrl);
+  logoDataUrl().then(u => { logoUrl = u; put(u); });
+}
+
+function railHtml(tab) {
+  const p = state.profile || {};
+  return `<aside class="rail" aria-label="Navigation principale">
+    <a class="rail-brand" href="#/" aria-label="Accueil">${brandMark()}<img class="logo" alt="Mehadrin" data-logo></a>
+    ${canWrite() ? `<button type="button" class="btn rail-new" data-new aria-label="Nouveau rapport">${icon('plus')}<span>Nouveau rapport</span></button>` : ''}
+    <nav class="rail-nav">${NAV.map(n => `<a class="nav-item" href="${n.hash}"${n.id === tab ? ' aria-current="page"' : ''}>${
+      icon(n.icon)}<span class="l-full">${esc(n.label)}</span><span class="l-short">${esc(n.short || n.label)}</span></a>`).join('')}</nav>
+    <div class="rail-foot">
+      <button type="button" class="rail-sync" id="railSync" title="Synchroniser"><span class="dt"></span><span class="tx">À jour</span></button>
+      <a class="rail-user" href="#/settings/account" title="Mon compte"><span class="avatar">${esc(initials(p.full_name || p.email))}</span>
+        <span class="tx"><b>${esc(p.full_name || '')}</b><span>${esc(roleLabel(p.role) || '')}</span></span></a>
+    </div>
+  </aside>`;
+}
+
+function tabbarHtml(tab) {
+  const item = (n) => `<a class="tab" href="${n.hash}"${n.id === tab ? ' aria-current="page"' : ''}>${icon(n.icon)}<span>${esc(n.short || n.label)}</span></a>`;
+  const [a, b, c, d] = NAV;
+  return `<nav class="tabbar" aria-label="Navigation principale">${item(a)}${item(b)}${
+    canWrite() ? `<button type="button" class="tab new" data-new aria-label="Nouveau rapport"><span class="plus">${icon('plus')}</span><span>Nouveau</span></button>` : ''
+  }${item(c)}${item(d)}</nav>`;
+}
+
+/* `tab` : l'onglet allumé dans la navigation. `root` : écran principal
+   — onglets visibles sur téléphone, pas de flèche retour. `sub` : une
+   ligne sous le titre (n° de rapport, état du brouillon). */
+export function shell(title, body, { back = null, actions = '', onMount, tab = null, root = false, sub = '', brand = false } = {}) {
+  runLeave();
   const app = $('#app');
   app.innerHTML = `
-    <header class="topbar">
-      ${back !== null
-        ? `<button class="icon-btn" id="back" aria-label="Retour">${icon('back')}</button>`
-        : `<img class="logo" id="homeLogo" alt="Mehadrin" src="">`}
-      <h1>${esc(title)}</h1>
-      ${actions}
-    </header>
-    <main id="main">${body}</main>`;
+    <div class="frame">
+      ${railHtml(tab)}
+      <div class="stage">
+        <header class="topbar${root ? ' root' : ''}${brand ? ' brand' : ''}"><div class="topbar-in">
+          ${back !== null ? `<button class="icon-btn" id="back" aria-label="Retour">${icon('back')}</button>` : ''}
+          ${brand ? `<img class="logo home-logo" alt="Mehadrin" data-logo>` : ''}
+          <div class="tt"><h1${brand ? ' class="sr"' : ''}>${esc(title)}</h1>${sub ? `<p id="subTitle">${sub}</p>` : ''}</div>
+          <div class="acts">${actions}</div>
+        </div></header>
+        <main id="main">${body}</main>
+      </div>
+    </div>
+    ${root ? tabbarHtml(tab) : ''}`;
+  document.body.classList.toggle('tabbed', !!root);
+  document.body.classList.toggle('has-actions', !!app.querySelector('.sticky-actions'));
   if (back !== null) $('#back').onclick = () => (typeof back === 'function' ? back() : history.back());
-  else logoDataUrl().then(u => { const l = $('#homeLogo'); if (l && u) l.src = u; });
+  $$('[data-new]').forEach(b => b.onclick = openNew);
+  const rs = $('#railSync'); if (rs) rs.onclick = syncNow;
+  paintLogos();
   updateSyncBadge();
   onMount?.();
   window.scrollTo(0, 0);
 }
 
+/* Nouveau rapport : les trois types, et pour chacun le brouillon en
+   cours s'il y en a un — ouvrir le type le reprend. */
+export async function openNew() {
+  const drafts = canWrite() ? await allDrafts() : [];
+  sheet('Nouveau rapport', `<div class="menu">${TYPE_LIST.map(T => {
+      const d = drafts.find(x => x.type === T.id);
+      return `<button class="menu-item" data-t="${T.id}"><span class="ic t-${T.id}">${icon(T.icon)}</span>
+        <span class="tx"><b>${esc(T.title)}</b><span>${d
+          ? `Brouillon en cours${d.partner_name ? ' · ' + esc(d.partner_name) : ''}` : esc(T.subtitle)}</span></span>
+        ${d ? '<span class="pill warn sm">à reprendre</span>' : ''}<span class="chev">${icon('chevR')}</span></button>`;
+    }).join('')}</div>`,
+    { onMount(el, close) {
+        el.querySelectorAll('[data-t]').forEach(b => b.onclick = () => { close(); go('#/report/new/' + b.dataset.t); });
+      } });
+}
+
 export function syncBadge() {
-  return `<button class="icon-btn" id="syncBtn" aria-label="Synchroniser">${icon('sync')}</button>
-          <span class="sync" id="syncTag" hidden><span class="dt"></span><span class="tx"></span></span>`;
+  return `<span class="sync" id="syncTag" hidden><span class="dt"></span><span class="tx"></span></span>
+          <button class="icon-btn" id="syncBtn" aria-label="Synchroniser">${icon('sync')}</button>`;
+}
+
+/* Le bouton annonçait « À jour » quoi qu'il arrive, y compris quand
+   rien n'était parti. Il dit maintenant ce qui s'est réellement passé. */
+async function syncNow() {
+  if (!navigator.onLine) return toast('Hors-ligne : envoi dès le retour du réseau', 'err');
+  toast('Synchronisation…');
+  const ok = await sync();
+  const left = await pendingCount();
+  if (!ok) toast('Envoi incomplet, nouvelle tentative automatique', 'err');
+  else toast(left ? `${left} élément${left > 1 ? 's' : ''} encore en attente` : 'À jour');
 }
 
 function updateSyncBadge() {
   const btn = $('#syncBtn');
-  if (btn && !btn.dataset.wired) {
-    btn.dataset.wired = '1';
-    /* Le bouton annonçait « À jour » quoi qu'il arrive, y compris
-       quand rien n'était parti. Il dit maintenant ce qui s'est
-       réellement passé. */
-    btn.onclick = async () => {
-      if (!navigator.onLine) return toast('Hors-ligne : envoi dès le retour du réseau', 'err');
-      toast('Synchronisation…');
-      const ok = await sync();
-      const left = await pendingCount();
-      if (!ok) toast('Envoi incomplet, nouvelle tentative automatique', 'err');
-      else toast(left ? `${left} élément${left > 1 ? 's' : ''} encore en attente` : 'À jour');
-    };
-  }
-  const tag = $('#syncTag');
-  if (!tag) return;
+  if (btn && !btn.dataset.wired) { btn.dataset.wired = '1'; btn.onclick = syncNow; }
   const offline = !navigator.onLine;
-  if (offline || state.pending > 0) {
-    tag.hidden = false;
-    tag.className = 'sync ' + (offline ? 'off' : 'pending');
-    tag.querySelector('.tx').textContent = offline
-      ? (state.pending ? `${state.pending} en attente` : 'Hors-ligne')
-      : `${state.pending} à envoyer`;
-  } else tag.hidden = true;
+  const text = offline ? (state.pending ? `${state.pending} en attente` : 'Hors-ligne')
+    : state.pending > 0 ? `${state.pending} à envoyer` : 'À jour';
+  const kind = offline ? 'off' : state.pending > 0 ? 'pending' : '';
+  const tag = $('#syncTag');
+  if (tag) {
+    if (kind) {
+      tag.hidden = false;
+      tag.className = 'sync ' + kind;
+      tag.querySelector('.tx').textContent = text;
+    } else tag.hidden = true;
+  }
+  const rs = $('#railSync');
+  if (rs) { rs.className = 'rail-sync ' + kind; rs.querySelector('.tx').textContent = text; rs.title = text + ' — synchroniser'; }
 }
 window.addEventListener('online',  updateSyncBadge);
 window.addEventListener('offline', updateSyncBadge);
@@ -224,6 +327,10 @@ export function route() {
      l'application : une feuille modale restée ouverte laissait
      `body{position:fixed}` en place et l'écran paraissait figé. */
   closeSheets();
+  /* L'écran qu'on quitte range ses affaires AVANT que le suivant ne se
+     dessine : la saisie en cours part dans son brouillon tant qu'elle
+     est encore la saisie en cours. */
+  runLeave();
   const h = location.hash || '#/';
   if (!goingBack) {
     if (trail[trail.length - 2] === h) {
@@ -261,48 +368,111 @@ export function back(fallback = '#/') {
   else location.hash = prev;
 }
 
-/* ============================== ACCUEIL ============================== */
-async function renderHome() {
-  const admin = state.profile?.role === 'admin';
-  const canWrite = ['admin', 'inspecteur'].includes(state.profile?.role);
+/* ============================== ACCUEIL ==============================
+   L'accueil n'était qu'une liste de liens. Il dit maintenant, d'un coup
+   d'œil, ce qui attend : les saisies en cours, les derniers rapports de
+   l'équipe et la semaine écoulée — et lance un contrôle d'une touche. */
+async function homeData() {
   /* Un rapport commencé et laissé en plan doit se voir dès l'accueil :
      sinon il n'existe nulle part et l'inspecteur recommence tout. */
-  const drafts = canWrite ? await allDrafts() : [];
-  shell(CONFIG.appName, `
-    ${drafts.length ? `<div class="menu" style="margin-bottom:14px">
-      ${drafts.map(d => `
-      <button class="menu-item draft" data-draft="${esc(d.id)}">
-        <span class="ic n">${icon('edit')}</span>
-        <span class="tx"><b>Reprendre : ${esc(reportTypeTitle(d.type))}</b>
-          <span>${esc([d.partner_name, groupById(d.product_group_id)?.name,
-                       d._draftAt ? 'modifié ' + relTime(d._draftAt) : ''].filter(Boolean).join(' · ')) || 'saisie en cours'}</span></span>
-        <span class="chev">›</span></button>`).join('')}
-    </div>` : ''}
-    <div class="menu">
-      ${canWrite ? TYPE_LIST.map(T => `
-      <button class="menu-item" data-go="#/report/new/${T.id}">
-        <span class="ic ${T.tone}">${icon(T.icon)}</span>
-        <span class="tx"><b>${esc(T.title)}</b><span>${esc(T.subtitle)}</span></span>
-        <span class="chev">›</span></button>`).join('') : ''}
-      <button class="menu-item" data-go="#/feed">
-        <span class="ic n">${icon('feed')}</span>
-        <span class="tx"><b>Flux des rapports</b><span>Tous les contrôles de l'équipe</span></span>
-        <span class="chev">›</span></button>
-      <button class="menu-item" data-go="#/stats">
-        <span class="ic n">${icon('chart')}</span>
-        <span class="tx"><b>Statistiques</b><span>Qualité par fournisseur et produit</span></span>
-        <span class="chev">›</span></button>
-      <button class="menu-item" data-go="#/settings">
-        <span class="ic n">${icon('gear')}</span>
-        <span class="tx"><b>Réglages</b><span>${admin ? 'Produits, critères, partenaires, équipe' : 'Mon compte'}</span></span>
-        <span class="chev">›</span></button>
+  const drafts = canWrite() ? await allDrafts() : [];
+  const all = (await local.all('reports')).filter(r => !r.deleted && !r._draft)
+    .sort((a, b) => new Date(b.report_date) - new Date(a.report_date));
+  const sig = JSON.stringify([drafts.map(d => [d.id, d._draftAt, d.partner_name]),
+    all.slice(0, 6).map(r => [r.id, r.partner_name, r.summary?.verdict, r._dirty, (r.photos || []).length]), all.length,
+    all.filter(r => localDay(r.report_date) >= localDay(Date.now() - 6 * 86400000)).map(r => r.summary?.verdict)]);
+  return { drafts, all, sig };
+}
+
+/* Une synchronisation vient de finir pendant qu'on regarde l'accueil :
+   on ne le redessine que si ce qu'il montre a changé (un rapport d'un
+   collègue, un envoi terminé), et à la même hauteur de page. */
+let homeSig = '';
+async function refreshHome() {
+  if (document.body.classList.contains('sheet-open')) return;
+  const { sig } = await homeData();
+  if (sig === homeSig) return;
+  const y = window.scrollY;
+  await renderHome();
+  window.scrollTo(0, y);
+}
+
+async function renderHome() {
+  const { drafts, all, sig } = await homeData();
+  homeSig = sig;
+  const recent = all.slice(0, 6);
+  /* Les 7 derniers jours, aujourd'hui compris, comptés en jours
+     calendaires : exactement ce que montrera la liste filtrée. */
+  const sinceDay = localDay(Date.now() - 6 * 86400000);
+  const week = all.filter(r => localDay(r.report_date) >= sinceDay);
+  const wNC = week.filter(r => r.summary?.verdict === 'Non Conforme').length;
+  const wAcc = week.filter(r => r.summary?.verdict === 'Acceptable').length;
+  const first = String(state.profile?.full_name || '').trim().split(/\s+/)[0];
+  const today = new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+  const hour = new Date().getHours();
+
+  shell('Accueil', `
+   <div class="home">
+    <div class="home-main">
+      <div class="hello"><h2>${hour >= 18 ? 'Bonsoir' : 'Bonjour'}${first ? ' ' + esc(first) : ''}</h2>
+        <p>${esc(today.charAt(0).toUpperCase() + today.slice(1))} · ${esc(state.settings.company)}</p></div>
+
+      ${canWrite() ? `<section class="quick-card" aria-label="Nouveau contrôle">
+        <div class="quick">${TYPE_LIST.map(T => {
+          const d = drafts.find(x => x.type === T.id);
+          return `<button class="qbtn" data-go="#/report/new/${T.id}">
+            <span class="ic t-${T.id}">${icon(T.icon)}</span>
+            <span><b>${esc(T.short)}</b><span class="s">${esc(T.subtitle)}</span>${
+              d ? '<span class="pill warn sm dr">brouillon</span>' : ''}</span></button>`;
+        }).join('')}</div></section>` : ''}
+
+      <section class="recent">
+        <div class="card-h" style="margin:4px 2px 10px"><h2>Derniers rapports</h2>
+          ${all.length ? `<a class="more" href="#/feed">Tout voir (${all.length})</a>` : ''}</div>
+        ${recent.length ? `<div class="feed">${recent.map(r => reportCard(r)).join('')}</div>`
+          : `<div class="card empty"><div class="ico">${icon('doc')}</div>
+              <p>Aucun rapport pour l'instant. ${canWrite() ? 'Le premier contrôle démarre juste au-dessus.' : ''}</p></div>`}
+      </section>
     </div>
-    <p class="muted" style="text-align:center;margin-top:22px">
-      ${esc(state.settings.company)} · ${esc(state.profile?.full_name || '')}<br>version ${CONFIG.version}
-    </p>`,
-    { actions: syncBadge(),
+
+    <div class="home-side">
+      ${drafts.length ? `<section class="drafts card">
+        <div class="card-h pad" style="padding-bottom:0;margin-bottom:6px"><h2>En cours</h2>
+          <span class="muted">appui long : abandonner</span></div>
+        ${drafts.map(d => `
+        <button class="draft-row" data-draft="${esc(d.id)}">
+          <span class="ic t-${esc(d.type)}">${icon(reportType(d.type).icon)}</span>
+          <span class="tx"><b>${esc(d.partner_name || reportTypeTitle(d.type))}</b>
+            <span>${esc([reportType(d.type).short, groupById(d.product_group_id)?.name,
+                         d._draftAt ? 'modifié ' + relTime(d._draftAt) : ''].filter(Boolean).join(' · '))}</span></span>
+          <span class="go">Reprendre</span></button>`).join('')}
+      </section>` : ''}
+
+      <section class="week card">
+        <div class="card-h pad" style="padding-bottom:0;margin-bottom:0"><h2>7 derniers jours</h2></div>
+        <div class="metrics">
+          <button class="metric" data-feed="">
+            <span class="n">${week.length}</span><span class="l">rapport${week.length > 1 ? 's' : ''}</span></button>
+          <button class="metric${wNC ? ' fail' : ''}" data-feed="Non Conforme">
+            <span class="n">${wNC}</span><span class="l">non conforme${wNC > 1 ? 's' : ''}</span></button>
+          <button class="metric${wAcc ? ' warn' : ''}" data-feed="Acceptable">
+            <span class="n">${wAcc}</span><span class="l">acceptable${wAcc > 1 ? 's' : ''}</span></button>
+        </div>
+      </section>
+
+      <p class="about">${esc(state.settings.company)} · Mehadrin QC ${CONFIG.version}</p>
+    </div>
+   </div>`,
+    { tab: 'home', root: true, brand: true, actions: syncBadge(),
       onMount() {
         document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
+        document.querySelectorAll('[data-id]').forEach(b => b.onclick = () => go('#/report/' + b.dataset.id));
+        recent.forEach(r => { if (livePhotos(r).length) paintThumbs(r); });
+        document.querySelectorAll('[data-feed]').forEach(b => b.onclick = () => {
+          /* La carte parle des 7 derniers jours : la liste ouverte aussi. */
+          feedFilter({ verdict: b.dataset.feed, from: sinceDay });
+          go('#/feed');
+        });
         document.querySelectorAll('[data-draft]').forEach(b => {
           const d = drafts.find(x => x.id === b.dataset.draft);
           /* Appui long : abandonner le brouillon. Le geste reste
@@ -353,34 +523,47 @@ async function dropDraft(d) {
   });
 }
 
-/* =========================== AUTHENTIFICATION =========================== */
+/* =========================== AUTHENTIFICATION ===========================
+   Sur ordinateur, l'écran se partage : la marque et ce que fait
+   l'application à gauche, le formulaire à droite. Sur téléphone, le
+   logo et le formulaire suffisent. */
+const authSide = () => `<aside class="auth-side"><div class="auth-side-in">
+    <span class="auth-mark">${brandMark()}</span>
+    <h1>Le contrôle qualité,<br>du quai au client.</h1>
+    <ul>
+      <li>${icon('clipboard')}<span>Réception, expédition et contrôle production, palette par palette</span></li>
+      <li>${icon('pdf')}<span>Rapports PDF en cinq langues, partagés en un geste</span></li>
+      <li>${icon('sync')}<span>Toute l'équipe synchronisée — la saisie continue hors réseau</span></li>
+    </ul></div></aside>`;
+
 function renderAuth(mode = 'login') {
+  document.body.classList.remove('tabbed', 'has-actions');
   const app = $('#app');
-  app.innerHTML = `<main><div class="auth-wrap">
-    <img class="auth-logo" alt="Mehadrin" src="" id="lg">
-    <div class="card pad">
-      <h2 style="font-size:18px;margin-bottom:4px">${mode === 'login' ? 'Connexion' : 'Créer un compte'}</h2>
-      <p class="muted" style="margin:0 0 16px">Contrôle qualité fruits &amp; légumes</p>
+  app.innerHTML = `<div class="auth">${authSide()}
+   <main class="auth-wrap">
+    <img class="auth-logo" alt="Mehadrin" id="lg" data-logo>
+    <div class="card auth-card">
+      <h2>${mode === 'login' ? 'Connexion' : 'Créer un compte'}</h2>
+      <p class="muted" style="margin:0 0 18px">${mode === 'login'
+        ? 'Contrôle qualité fruits &amp; légumes' : 'Un administrateur ou un responsable validera votre accès.'}</p>
       <div id="msg"></div>
       <form id="f">
         ${mode === 'signup' ? `<div class="field"><label for="n">Nom et prénom</label>
           <input id="n" type="text" autocomplete="name" required></div>` : ''}
         <div class="field"><label for="e">E-mail</label>
-          <input id="e" type="email" autocomplete="email" required></div>
+          <input id="e" type="email" autocomplete="email" inputmode="email" required></div>
         <div class="field"><label for="p">Mot de passe</label>
           <input id="p" type="password" autocomplete="${mode === 'login' ? 'current-password' : 'new-password'}" minlength="8" required>
           ${mode === 'signup' ? '<div class="hint">8 caractères minimum.</div>' : ''}</div>
         <button class="btn block" type="submit" id="sub">${mode === 'login' ? 'Se connecter' : 'Créer le compte'}</button>
       </form>
-      <hr class="sep">
-      <div class="btn-row" style="justify-content:space-between">
-        <button class="btn ghost sm" id="alt">${mode === 'login' ? 'Créer un compte' : 'J\'ai déjà un compte'}</button>
-        ${mode === 'login' ? '<button class="btn ghost sm" id="forgot">Mot de passe oublié</button>' : ''}
+      <div class="auth-alt">
+        <button type="button" class="btn ghost sm" id="alt">${mode === 'login' ? 'Créer un compte' : 'J\'ai déjà un compte'}</button>
+        ${mode === 'login' ? '<button type="button" class="btn ghost sm" id="forgot">Mot de passe oublié</button>' : ''}
       </div>
     </div>
-    <p class="muted" style="text-align:center;margin-top:18px">Données hébergées en France (Supabase, région Paris).</p>
-  </div></main>`;
-  logoDataUrl().then(u => { const l = $('#lg'); if (l && u) l.src = u; });
+   </main></div>`;
+  paintLogos();
 
   $('#alt').onclick = () => renderAuth(mode === 'login' ? 'signup' : 'login');
   const forgot = $('#forgot');
@@ -420,19 +603,20 @@ function renderAuth(mode = 'login') {
 
 let pendingTimer = null;
 function renderPending() {
-  $('#app').innerHTML = `<main><div class="auth-wrap">
-    <img class="auth-logo" alt="Mehadrin" src="" id="lg">
-    <div class="card pad" style="text-align:center">
-      <div style="font-size:38px">⏳</div>
-      <h2 style="font-size:17px;margin:10px 0 6px">Compte en attente</h2>
-      <p class="muted">Votre accès doit être validé par un administrateur.
-      Vous serez opérationnel dès qu'il aura activé votre compte.</p>
-      <div class="btn-row" style="justify-content:center;margin-top:16px">
+  document.body.classList.remove('tabbed', 'has-actions');
+  $('#app').innerHTML = `<div class="auth">${authSide()}<main class="auth-wrap">
+    <img class="auth-logo" alt="Mehadrin" id="lg" data-logo>
+    <div class="card auth-card" style="text-align:center">
+      <div class="empty" style="padding:6px 0 0"><div class="ico">${icon('clock')}</div></div>
+      <h2 style="font-size:19px">Compte en attente</h2>
+      <p class="muted" style="margin:6px 0 0">Votre accès doit être validé par un administrateur ou un responsable.
+      Vous serez opérationnel dès que votre compte sera activé — cet écran se met à jour tout seul.</p>
+      <div class="btn-row" style="justify-content:center;margin-top:18px">
         <button class="btn ghost sm" id="again">Vérifier à nouveau</button>
         <button class="btn ghost sm" id="out">Se déconnecter</button>
       </div>
-    </div></div></main>`;
-  logoDataUrl().then(u => { const l = $('#lg'); if (l && u) l.src = u; });
+    </div></main></div>`;
+  paintLogos();
   $('#again').onclick = () => boot();
   $('#out').onclick = () => logout();
 

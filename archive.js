@@ -12,7 +12,7 @@
    l'archive, et le rapport dit quand elles ont été archivées.
    ------------------------------------------------------------------ */
 
-import { state, shell, groupById, back } from './app.js';
+import { state, shell, groupById, back, canManage } from './app.js';
 import { local, queue, sync } from './store.js';
 import { storage } from './supa.js';
 import { buildReportPDF, reportFilename, LANGS } from './report-pdf.js';
@@ -47,7 +47,7 @@ function inPeriod(reports) {
 }
 
 export async function renderPhotoArchive() {
-  if (state.profile?.role !== 'admin') return back('#/settings');
+  if (!canManage()) return back('#/settings');
   const reports = await allReports();
   const photos = reports.flatMap(r => r.photos || []);
   const live = photos.filter(onServer);
@@ -58,23 +58,24 @@ export async function renderPhotoArchive() {
   const pct = Math.min(100, used / QUOTA * 100);
 
   shell('Photos et espace', `
+   <div class="narrow">
     <div class="card pad">
-      <h3 style="font-size:14.5px;margin-bottom:8px">Photos sur Supabase</h3>
+      <div class="card-h"><h3>Photos en ligne</h3><span class="muted">limite : 1 Go</span></div>
       <div class="gauge${pct > 80 ? ' high' : ''}" role="img" aria-label="${Math.round(pct)} % de l'espace photos utilisé">
         <span style="width:${pct.toFixed(1)}%"></span></div>
-      <p style="margin:8px 0 0;font-size:14px"><b>≈ ${fmtMo(used)}</b> sur 1 Go
+      <p style="margin:10px 0 0;font-size:14px"><b>≈ ${fmtMo(used)}</b> sur 1 Go
         · ${live.length} photo${live.length > 1 ? 's' : ''}${archived ? ` · ${archived} archivée${archived > 1 ? 's' : ''}` : ''}</p>
-      <p class="muted" style="margin:6px 0 0;font-size:12.5px">Estimation d'après les rapports de l'appareil. Les photos partent
+      <p class="hint">Estimation d'après les rapports de l'appareil. Les photos partent
         allégées depuis la version 2.5 (${light} sur ${live.length}) ; celles d'avant gardent leur pleine taille
         jusqu'à leur archivage.</p>
     </div>
 
-    <div class="card pad" style="margin-top:12px">
-      <h3 style="font-size:14.5px;margin-bottom:4px">Archiver une période</h3>
-      <p class="muted" style="margin:0 0 12px">1. Téléchargez le ZIP des PDF de la période, photos comprises.
-        2. Retirez ensuite ces photos de Supabase. Les rapports restent consultables ; leurs photos sont
+    <div class="card pad">
+      <div class="card-h"><h3>Archiver une période</h3></div>
+      <p class="muted" style="margin:-6px 0 12px">1. Téléchargez le ZIP des PDF de la période, photos comprises.
+        2. Retirez ensuite ces photos du serveur. Les rapports restent consultables ; leurs photos sont
         dans les PDF de l'archive.</p>
-      <div class="chips" style="margin-bottom:10px">
+      <div class="chips" style="margin-bottom:12px">
         <button class="chip" data-pre="3">Plus de 3 mois</button>
         <button class="chip" data-pre="6">Plus de 6 mois</button>
         <button class="chip" data-pre="12">Plus d'un an</button>
@@ -86,14 +87,15 @@ export async function renderPhotoArchive() {
       <div class="field"><label>Langue des PDF</label>
         <div class="chips" id="arLang">${Object.entries(LANGS).map(([k, v]) =>
           `<button class="chip" data-l="${k}" aria-pressed="${k === sel.lang}">${esc(v)}</button>`).join('')}</div></div>
-      <p id="arSum" style="margin:4px 0 12px;font-size:14px"></p>
+      <div class="info-box" id="arSum" style="margin:4px 0 14px"></div>
       <button class="btn block" id="arZip">${icon('down')} 1. Télécharger les PDF (ZIP)</button>
-      <div class="muted" id="arProg" style="margin:6px 0 10px;min-height:1em;font-size:13px"></div>
-      <button class="btn danger block" id="arDel">2. Retirer ces photos de Supabase</button>
-      <p class="muted" style="margin:8px 0 0;font-size:12.5px">Sur ordinateur de préférence pour une longue période : chaque
+      <div class="muted" id="arProg" style="margin:8px 0 10px;min-height:1em;font-size:13px"></div>
+      <button class="btn danger block" id="arDel">${icon('trash')} 2. Retirer ces photos du serveur</button>
+      <p class="hint" style="margin-top:10px">Sur ordinateur de préférence pour une longue période : chaque
         rapport devient un PDF, et l'archive se prépare sur l'appareil.</p>
-    </div>`,
-    { back: () => back('#/settings'),
+    </div>
+   </div>`,
+    { back: () => back('#/settings'), tab: 'settings',
       onMount() {
         const paint = () => {
           const list = inPeriod(reports);
@@ -101,7 +103,7 @@ export async function renderPhotoArchive() {
           $('#arSum').innerHTML = list.length
             ? `<b>${list.length}</b> rapport${list.length > 1 ? 's' : ''} avec photos · <b>${ph.length}</b> photo${
                 ph.length > 1 ? 's' : ''} · ≈ ${fmtMo(ph.reduce((s, p) => s + weight(p), 0))}`
-            : 'Aucune photo sur Supabase pour cette période.';
+            : 'Aucune photo en ligne pour cette période.';
           $('#arZip').disabled = !list.length;
           $('#arDel').disabled = !list.length || sel.zipped !== key();
         };
@@ -134,8 +136,8 @@ async function makeZip(list, paint) {
       prog.textContent = `PDF ${i + 1} sur ${list.length}…`;
       const g = groupById(r.product_group_id);
       const pdf = await buildReportPDF(r, gridOf(r, g), { lang: sel.lang, company: state.settings.company });
-      let name = reportFilename(r, g, 'pdf');
-      for (let k = 2; used.has(name); k++) name = reportFilename(r, g, 'pdf').replace(/\.pdf$/, ` (${k}).pdf`);
+      let name = reportFilename(r, g, 'pdf', sel.lang);
+      for (let k = 2; used.has(name); k++) name = reportFilename(r, g, 'pdf', sel.lang).replace(/\.pdf$/, ` (${k}).pdf`);
       used.add(name);
       files.push({ name, data: new Uint8Array(await pdf.arrayBuffer()) });
     }
@@ -162,7 +164,7 @@ async function removePhotos(list) {
   const size = photos.reduce((s, p) => s + weight(p), 0);
   if (!(await confirmSheet('Retirer les photos',
         `${photos.length} photo${photos.length > 1 ? 's' : ''} de ${list.length} rapport${list.length > 1 ? 's' : ''} ` +
-        `(≈ ${fmtMo(size)}) seront supprimées de Supabase. Elles restent dans les PDF de l'archive que vous venez ` +
+        `(≈ ${fmtMo(size)}) seront supprimées du serveur. Elles restent dans les PDF de l'archive que vous venez ` +
         `de télécharger ; les rapports, eux, restent consultables.`,
         { okLabel: 'Retirer les photos' }))) return;
 
@@ -200,7 +202,7 @@ async function removePhotos(list) {
   }
   sync({ silent: true });
   const left = photos.length - n;
-  toast(`${n} photo${n > 1 ? 's' : ''} retirée${n > 1 ? 's' : ''} de Supabase${
+  toast(`${n} photo${n > 1 ? 's' : ''} retirée${n > 1 ? 's' : ''} du serveur${
     left ? ` · ${left} n'ont pas pu l'être` : ''}`, left ? 'err' : '', { ms: 6000 });
   sel.zipped = '';
   renderPhotoArchive();

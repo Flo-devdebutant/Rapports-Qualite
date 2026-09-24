@@ -7,9 +7,9 @@
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "orientation": "portrait",
-  "background_color": "#f4f5f7",
-  "theme_color": "#ff8725",
+  "orientation": "any",
+  "background_color": "#f3f4f6",
+  "theme_color": "#f3f4f6",
   "categories": ["business", "productivity", "utilities"],
   "icons": [
     { "src": "./icon-192.png", "sizes": "192x192", "type": "image/png" },
@@ -21,7 +21,7 @@
       "icons": [{ "src": "./icon-192.png", "sizes": "192x192" }] },
     { "name": "Rapport d'expédition", "short_name": "Expédition", "url": "./#/report/new/expedition",
       "icons": [{ "src": "./icon-192.png", "sizes": "192x192" }] },
-    { "name": "Flux des rapports", "short_name": "Flux", "url": "./#/feed",
+    { "name": "Rapports de l'équipe", "short_name": "Rapports", "url": "./#/feed",
       "icons": [{ "src": "./icon-192.png", "sizes": "192x192" }] }
   ]
 }

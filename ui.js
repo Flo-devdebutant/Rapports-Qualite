@@ -41,10 +41,43 @@ export const ICONS = {
   flag:   '<path d="M5.5 21V4"/><path d="M5.5 4.5h11.5l-2.4 4.2 2.4 4.3H5.5"/>',
   x:      '<path d="M6 6l12 12M18 6L6 18"/>',
   sync:   '<path d="M3.5 12a8.5 8.5 0 0114.6-5.9M20.5 12a8.5 8.5 0 01-14.6 5.9"/><path d="M18 3v4h-4M6 21v-4h4"/>',
-  down:   '<path d="M12 4v13M7 12l5 5 5-5"/><path d="M4 20h16"/>'
+  down:   '<path d="M12 4v13M7 12l5 5 5-5"/><path d="M4 20h16"/>',
+  /* 3.0 : navigation et états. */
+  home:   '<path d="M3.5 11.2L12 4l8.5 7.2"/><path d="M5.8 9.6V20h12.4V9.6"/><path d="M10 20v-5.2h4V20"/>',
+  doc:    '<path d="M7 3.5h7.2L19 8.3V20.5H7z"/><path d="M14 3.5v5h5"/><path d="M10 13h6M10 16.8h6"/>',
+  filter: '<path d="M4 5.5h16l-6.2 7.3v5.4l-3.6 1.8v-7.2z"/>',
+  dots:   '<circle cx="5.5" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
+  chevR:  '<path d="M9.5 6l6 6-6 6"/>',
+  chevD:  '<path d="M6 9.5l6 6 6-6"/>',
+  up:     '<path d="M12 19V5.5M6.5 11L12 5.5l5.5 5.5"/>',
+  dn:     '<path d="M12 5v13.5M6.5 13l5.5 5.5 5.5-5.5"/>',
+  eye:    '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M4 4l16 16"/><path d="M10.3 5.7A9.6 9.6 0 0112 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 01-3.1 3.9M6.4 7.3C3.9 9 2.5 12 2.5 12S6 18.5 12 18.5c1.7 0 3.2-.5 4.5-1.2"/><path d="M9.9 10a3 3 0 004.1 4.1"/>',
+  alert:  '<path d="M12 4.2l9 15.6H3z"/><path d="M12 10v4.2M12 17h.01"/>',
+  info:   '<circle cx="12" cy="12" r="8.6"/><path d="M12 11v5.2M12 7.8h.01"/>',
+  clock:  '<circle cx="12" cy="12" r="8.6"/><path d="M12 7.5V12l3 2"/>',
+  lock:   '<rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8 10.5V8a4 4 0 018 0v2.5"/>',
+  mail:   '<rect x="3.5" y="5.5" width="17" height="13" rx="2"/><path d="M4 7l8 6 8-6"/>',
+  building: '<path d="M5 20.5V5.5l8-2v17M13 9.5h6v11"/><path d="M8 8h2M8 11.5h2M8 15h2M16 13h.01M16 16.5h.01"/><path d="M3 20.5h18"/>',
+  offline: '<path d="M4 4l16 16"/><path d="M8.5 8.3A5.8 5.8 0 006.2 11 4.2 4.2 0 007 19.5h10.5M19.6 17.4A4 4 0 0017.7 10a6 6 0 00-7.3-4.6"/>',
+  pallet: '<path d="M4 17.5h16M4 20.5h16M6 17.5v3M12 17.5v3M18 17.5v3"/><rect x="5.5" y="5" width="13" height="9.5" rx="1.2"/><path d="M5.5 9.8h13M12 5v9.5"/>'
 };
 export const icon = (n, cls = '') =>
   `<svg viewBox="0 0 24 24" class="${cls}" aria-hidden="true">${ICONS[n] || ''}</svg>`;
+
+/* Le fruit du logo Mehadrin, en couleurs : repère de marque dans le rail
+   compact et sur l'écran d'accueil. `mark` le soustrait à la règle des
+   icônes au trait. */
+export const brandMark = (cls = '') => `<svg class="mark ${cls}" viewBox="-14 -12 102 88" aria-hidden="true">
+  <path d="M6.276,7.114a20.691,20.691,0,0,1,14.8,6.215,20.745,20.745,0,0,1,33.5,5.532,33.676,33.676,0,0,0-67.346.765A20.8,20.8,0,0,1,6.276,7.114" transform="translate(12.775 39.169)" fill="#ff8725"/>
+  <path d="M.121,6.158C.561,7.54,1.368,8.112,1.408,7.69c.025-.252.055-.505.094-.762C2.749-1.425,9.971-6.361,17.771-7.846c1.418-.268,1.457-.058.092.418C14.021-6.089,10.378-4.087,7.934-.743A22.1,22.1,0,0,0,4.373,7.864a2.833,2.833,0,0,0,2.641,2.988c3.065-.037,6.313-1.718,8.9-4.845C17.744,3.634,19.6-.455,23.454-3.98A20.851,20.851,0,0,1,34.68-9.258c1.436-.151,1.46-.217.086-.661a37.734,37.734,0,0,0-13.21-2.4C14.017-12.311,5.875-8.245,3.328-4.9-.207-.5-.757,3.385.121,6.158" transform="translate(38.88 12.327)" fill="#92cb45"/>
+</svg>`;
+
+/* Initiales d'un nom, pour l'avatar : « Florian Bresse » → « FB ». */
+export const initials = (name) => {
+  const w = String(name || '').replace(/[@.].*$/, '').split(/[\s\-_]+/).filter(Boolean);
+  return ((w[0]?.[0] || '') + (w.length > 1 ? w[w.length - 1][0] : (w[0]?.[1] || ''))).toUpperCase() || '?';
+};
 
 /* ------------------------------ toast ------------------------------
    Un message peut porter une action — « Supprimé · Annuler ». C'est la
@@ -77,7 +110,9 @@ export function toast(msg, kind = '', { action = '', onAction = null, onExpire =
      été employée : c'est là, et seulement là, que le définitif devient
      définitif. */
   toastExpire = onExpire;
-  el.className = 'toast on ' + kind;
+  /* Un message qui porte une action doit recevoir le doigt ; les autres
+     le laissent passer vers ce qu'ils recouvrent. */
+  el.className = 'toast on ' + kind + (action ? ' act' : '');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     el.className = 'toast ' + kind;
@@ -99,6 +134,9 @@ function lockScroll() {
   if (lockDepth++ === 0) {
     lockY = window.scrollY;
     const b = document.body;
+    /* Feuille ouverte : les messages passent en haut de l'écran, pour
+       ne pas recouvrir ses boutons (voir .toast dans app.css). */
+    b.classList.add('sheet-open');
     b.style.position = 'fixed';
     b.style.top = `-${lockY}px`;
     b.style.left = '0'; b.style.right = '0';
@@ -109,6 +147,7 @@ function unlockScroll() {
   if (--lockDepth > 0) return;
   lockDepth = 0;
   const b = document.body;
+  b.classList.remove('sheet-open');
   b.style.position = ''; b.style.top = ''; b.style.left = ''; b.style.right = ''; b.style.width = '';
   window.scrollTo(0, lockY);
 }
@@ -123,7 +162,11 @@ export function closeSheets() { for (const c of [...openSheets]) c(); }
 export function sheet(title, html, { onMount, onClose } = {}) {
   const bg = document.createElement('div'); bg.className = 'sheet-bg';
   const sh = document.createElement('div'); sh.className = 'sheet';
-  sh.innerHTML = `<div class="sheet-head"><div class="grip"></div>${title ? `<h3>${esc(title)}</h3>` : ''}</div>
+  /* Une croix de fermeture en plus du geste : sur ordinateur, il n'y a
+     ni poignée ni glissement, et « cliquer à côté » ne se devine pas. */
+  sh.innerHTML = `<div class="sheet-head"><div class="grip"></div>
+      <div class="sheet-title${title ? '' : ' notitle'}">${title ? `<h3>${esc(title)}</h3>` : '<span style="flex:1"></span>'}
+        <button type="button" class="icon-btn sheet-x" aria-label="Fermer">${icon('x')}</button></div></div>
     <div class="sheet-body">${html}</div>`;
   document.body.append(bg, sh);
   lockScroll();
@@ -144,6 +187,7 @@ export function sheet(title, html, { onMount, onClose } = {}) {
   openSheets.add(close);
   const onKey = (e) => { if (e.key === 'Escape') close(); };
   bg.onclick = close;
+  sh.querySelector('.sheet-x').onclick = close;
   document.addEventListener('keydown', onKey);
 
   /* Glissement vers le bas depuis l'en-tête. On ne suit que le geste
@@ -151,6 +195,9 @@ export function sheet(title, html, { onMount, onClose } = {}) {
   const head = sh.querySelector('.sheet-head');
   let y0 = null;
   head.addEventListener('pointerdown', (e) => {
+    /* La croix vit dans l'en-tête : capturer le pointeur ici lui volait
+       son clic. */
+    if (e.target.closest('button')) return;
     y0 = e.clientY;
     sh.style.transition = 'none';
     head.setPointerCapture?.(e.pointerId);
@@ -347,7 +394,7 @@ export function setTheme(mode) {
     meta.name = 'theme-color';
     document.head.appendChild(meta);
   }
-  meta.content = mode === 'dark' ? '#191b1f' : '#ff8725';
+  meta.content = mode === 'dark' ? '#0e1013' : '#f3f4f6';
 }
 
 /* --------------------------- divers --------------------------- */

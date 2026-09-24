@@ -87,8 +87,13 @@ const T_REC = {
         underOf:(u, w) => `${u} fruit${u > 1 ? 's' : ''} sous-calibré${u > 1 ? 's' : ''} sur ${w} pesés`,
         noMinWeight:'Poids minimum inconnu pour ces calibres : rien n\'est jugé.',
         blankOk:'Seuls les fruits sous le poids minimum sont notés : une case vide est un fruit pesé et conforme.',
-        kpiNote:(c, f) => `Sur ${c} fruits contrôlés${f ? ` (${f} fruits dans le lot)` : ''}.`,
-        defNote:(b) => `Nombre de fruits touchés, comptés sur ${b} colis ouverts par palette. Pertes : % des fruits contrôlés.` },
+        kpiNote:(c, f, k) => `Sur ${c} fruits contrôlés${k ? ` et ${k} fruits coupés` : ''}${f ? ` (${f} fruits dans le lot)` : ''}.`,
+        cut:'Coupés',
+        defNote:(b, k) => k == null
+          ? `Nombre de fruits touchés, comptés sur ${b} colis ouverts par palette. Pertes : % des fruits contrôlés.`
+          : `Nombre de fruits touchés. Défauts externes : comptés sur ${b} colis ouverts par palette ; défauts internes : ${
+              k === 'var' ? 'sur les fruits coupés de chaque palette (colonne « Coupés »)' : `sur ${k} fruits coupés par palette`}. ` +
+            `Pertes : somme des % de chaque défaut, rapporté à son propre échantillon.` },
   en: { lotNo:'Batch No.', arrivalDate:'Arrival date', truck:'Truck No.', kpiTitle:'Lot indicators', under:'Undersize',
         light:'Minor defects', loss:'Losses', palletDetail:'Pallet details', palletsId:'Pallet identification',
         defectsTitle:'Defects per pallet', underTitle:'Undersize per pallet', boxKg:'Box (kg)', brand:'Brand',
@@ -100,8 +105,13 @@ const T_REC = {
         underOf:(u, w) => `${u} undersized fruit out of ${w} weighed`,
         noMinWeight:'Minimum weight unknown for these sizes: nothing is assessed.',
         blankOk:'Only fruit below the minimum weight are recorded: an empty cell is a fruit weighed and compliant.',
-        kpiNote:(c, f) => `Based on ${c} fruit checked${f ? ` (${f} fruit in the lot)` : ''}.`,
-        defNote:(b) => `Number of affected fruit, counted in ${b} boxes opened per pallet. Losses: % of fruit checked.` },
+        kpiNote:(c, f, k) => `Based on ${c} fruit checked${k ? ` and ${k} fruit cut open` : ''}${f ? ` (${f} fruit in the lot)` : ''}.`,
+        cut:'Cut',
+        defNote:(b, k) => k == null
+          ? `Number of affected fruit, counted in ${b} boxes opened per pallet. Losses: % of fruit checked.`
+          : `Number of affected fruit. External defects: counted in ${b} boxes opened per pallet; internal defects: ${
+              k === 'var' ? 'on the fruit cut open on each pallet ("Cut" column)' : `on ${k} fruit cut open per pallet`}. ` +
+            `Losses: sum of the % of each defect, relative to its own sample.` },
   it: { lotNo:'N. lotto', arrivalDate:'Data di arrivo', truck:'N. camion', kpiTitle:'Indicatori del lotto', under:'Sottocalibro',
         light:'Difetti lievi', loss:'Perdite', palletDetail:'Dettaglio per pallet', palletsId:'Identificazione dei pallet',
         defectsTitle:'Difetti per pallet', underTitle:'Sottocalibro per pallet', boxKg:'Collo (kg)', brand:'Marchio',
@@ -113,8 +123,13 @@ const T_REC = {
         underOf:(u, w) => `${u} frutt${u > 1 ? 'i' : 'o'} sottocalibro su ${w} pesati`,
         noMinWeight:'Peso minimo sconosciuto per questi calibri: nulla viene valutato.',
         blankOk:'Si annotano solo i frutti sotto il peso minimo: una casella vuota è un frutto pesato e conforme.',
-        kpiNote:(c, f) => `Su ${c} frutti controllati${f ? ` (${f} frutti nel lotto)` : ''}.`,
-        defNote:(b) => `Numero di frutti colpiti, contati su ${b} colli aperti per pallet. Perdite: % dei frutti controllati.` },
+        kpiNote:(c, f, k) => `Su ${c} frutti controllati${k ? ` e ${k} frutti tagliati` : ''}${f ? ` (${f} frutti nel lotto)` : ''}.`,
+        cut:'Tagliati',
+        defNote:(b, k) => k == null
+          ? `Numero di frutti colpiti, contati su ${b} colli aperti per pallet. Perdite: % dei frutti controllati.`
+          : `Numero di frutti colpiti. Difetti esterni: contati su ${b} colli aperti per pallet; difetti interni: ${
+              k === 'var' ? 'sui frutti tagliati di ogni pallet (colonna «Tagliati»)' : `su ${k} frutti tagliati per pallet`}. ` +
+            `Perdite: somma delle % di ciascun difetto, rispetto al proprio campione.` },
   es: { lotNo:'N.º de lote', arrivalDate:'Fecha de llegada', truck:'N.º de camión', kpiTitle:'Indicadores del lote', under:'Subcalibre',
         light:'Defectos leves', loss:'Pérdidas', palletDetail:'Detalle por palé', palletsId:'Identificación de los palés',
         defectsTitle:'Defectos por palé', underTitle:'Subcalibre por palé', boxKg:'Caja (kg)', brand:'Marca',
@@ -126,8 +141,13 @@ const T_REC = {
         underOf:(u, w) => `${u} fruto${u > 1 ? 's' : ''} subcalibrado${u > 1 ? 's' : ''} de ${w} pesados`,
         noMinWeight:'Peso mínimo desconocido para estos calibres: no se evalúa nada.',
         blankOk:'Solo se anotan los frutos por debajo del peso mínimo: una casilla vacía es un fruto pesado y conforme.',
-        kpiNote:(c, f) => `Sobre ${c} frutos controlados${f ? ` (${f} frutos en el lote)` : ''}.`,
-        defNote:(b) => `Número de frutos afectados, contados en ${b} cajas abiertas por palé. Pérdidas: % de los frutos controlados.` },
+        kpiNote:(c, f, k) => `Sobre ${c} frutos controlados${k ? ` y ${k} frutos cortados` : ''}${f ? ` (${f} frutos en el lote)` : ''}.`,
+        cut:'Cortados',
+        defNote:(b, k) => k == null
+          ? `Número de frutos afectados, contados en ${b} cajas abiertas por palé. Pérdidas: % de los frutos controlados.`
+          : `Número de frutos afectados. Defectos externos: contados en ${b} cajas abiertas por palé; defectos internos: ${
+              k === 'var' ? 'en los frutos cortados de cada palé (columna «Cortados»)' : `en ${k} frutos cortados por palé`}. ` +
+            `Pérdidas: suma de los % de cada defecto, respecto a su propia muestra.` },
   nl: { lotNo:'Partijnummer', arrivalDate:'Aankomstdatum', truck:'Vrachtwagennr.', kpiTitle:'Kerncijfers partij', under:'Ondermaat',
         light:'Lichte gebreken', loss:'Verliezen', palletDetail:'Details per pallet', palletsId:'Identificatie van de pallets',
         defectsTitle:'Gebreken per pallet', underTitle:'Ondermaat per pallet', boxKg:'Colli (kg)', brand:'Merk',
@@ -139,8 +159,13 @@ const T_REC = {
         underOf:(u, w) => `${u} ${u > 1 ? 'vruchten' : 'vrucht'} onder maat van ${w} gewogen`,
         noMinWeight:'Minimumgewicht onbekend voor deze maten: niets wordt beoordeeld.',
         blankOk:'Alleen vruchten onder het minimumgewicht worden genoteerd: een leeg vak is een gewogen, conforme vrucht.',
-        kpiNote:(c, f) => `Op ${c} gecontroleerde vruchten${f ? ` (${f} vruchten in de partij)` : ''}.`,
-        defNote:(b) => `Aantal aangetaste vruchten, geteld in ${b} geopende colli per pallet. Verliezen: % van de gecontroleerde vruchten.` }
+        kpiNote:(c, f, k) => `Op ${c} gecontroleerde vruchten${k ? ` en ${k} doorgesneden vruchten` : ''}${f ? ` (${f} vruchten in de partij)` : ''}.`,
+        cut:'Gesneden',
+        defNote:(b, k) => k == null
+          ? `Aantal aangetaste vruchten, geteld in ${b} geopende colli per pallet. Verliezen: % van de gecontroleerde vruchten.`
+          : `Aantal aangetaste vruchten. Uitwendige gebreken: geteld in ${b} geopende colli per pallet; inwendige gebreken: ${
+              k === 'var' ? 'op de doorgesneden vruchten van elke pallet (kolom „Gesneden")' : `op ${k} doorgesneden vruchten per pallet`}. ` +
+            `Verliezen: som van de % van elk gebrek, ten opzichte van de eigen steekproef.` }
 };
 for (const l of Object.keys(T_REC)) Object.assign(T[l], T_REC[l]);
 
@@ -454,7 +479,8 @@ export async function buildReportPDF(report, group, { lang = 'fr', company = 'SA
       [ { u: cell(recK.under, tone.under), l: cell(recK.light, tone.light), p: cell(recK.loss, tone.loss) } ]);
     if (recK.checked) {
       doc.need(12);
-      doc.text(t.kpiNote(recK.checked.toLocaleString(numLocale(lang)), recK.fruits ? Number(recK.fruits).toLocaleString(numLocale(lang)) : ''),
+      doc.text(t.kpiNote(recK.checked.toLocaleString(numLocale(lang)), recK.fruits ? Number(recK.fruits).toLocaleString(numLocale(lang)) : '',
+                         recK.cut ? Number(recK.cut).toLocaleString(numLocale(lang)) : ''),
         MARGIN, doc.y + 4, { size: 7.6, color: COLORS.GREY });
       doc.y += 12;
     }
@@ -896,16 +922,21 @@ function drawReceptionPallets(doc, h, group, t, lang) {
     doc.need(120);
     doc.subhead(t.defectsTitle);
     const cols = [{ k: 'n', h: t.pallet, w: 60, fit: true }, { k: 'ck', h: t.checked, w: 44 },
+      ...(rs.legacy ? [] : [{ k: 'ct', h: t.cut, w: 40 }]),
       ...rs.defs.map(d => ({ k: 'd_' + d.key, h: trLabel(lang, d.label, d.i18n), w: 30, rot: true })),
       { k: 'e', h: t.ext, w: 30 }, { k: 'i', h: t.int, w: 30 }, { k: 'l', h: t.lossPct, w: 46 }];
     doc.table(cols, rs.rows.map(x => {
-      const row = { ...mark(x.n), ck: x.def.checked ?? '', e: x.def.ext || '', i: x.def.int || '',
+      const row = { ...mark(x.n), ck: x.def.checked ?? '', ct: x.def.cut ?? '', e: x.def.ext || '', i: x.def.int || '',
         l: x.def.checked == null ? '' : x.def.loss
           ? { v: pctTxt(x.def.lossPct, lang), bold: true, color: COLORS.RED } : pctTxt(0, lang) };
       for (const d of rs.defs) row['d_' + d.key] = x.def.counts[d.key] || '';
       return row;
     }), { size: 7.8, headSize: 7.4 });
-    const note = t.defNote(samplingCfg(group).boxes);
+    /* Défauts internes : un seul nombre de fruits coupés pour tout le
+       lot, ou « chaque palette » quand certaines en ont eu davantage. */
+    const cuts = [...new Set(rs.rows.filter(x => x.def.checked).map(x => x.def.cut))];
+    const note = t.defNote(samplingCfg(group).boxes,
+      rs.legacy || !rs.defs.some(d => d.where === 'int') ? null : cuts.length === 1 ? cuts[0] : 'var');
     for (const ln of splitToWidth(note, 7.6, PAGE.w - 2 * MARGIN)) {
       doc.need(10);
       doc.text(ln, MARGIN, doc.y + 4, { size: 7.6, color: COLORS.GREY });
@@ -969,8 +1000,13 @@ function splitToWidth(str, size, maxW) {
      production  Rapport Contrôle Qualité Avocat Hass Premium Monoprix du 21-09-2026
 
    La date s'écrit avec des tirets : la barre oblique est interdite dans
-   un nom de fichier sur tous les systèmes. */
-export function reportFilename(report, group, ext = 'pdf') {
+   un nom de fichier sur tous les systèmes.
+
+   Un PDF dans une autre langue que le français porte son code entre
+   parenthèses — « … (EN).pdf » — pour qu'on ne confonde pas, dans un
+   dossier ou une pièce jointe, la version client et la version interne
+   du même rapport. */
+export function reportFilename(report, group, ext = 'pdf', lang = 'fr') {
   const d = new Date(report.report_date);
   const p = (n) => String(n).padStart(2, '0');
   const date = `${p(d.getDate())}-${p(d.getMonth() + 1)}-${d.getFullYear()}`;
@@ -995,8 +1031,9 @@ export function reportFilename(report, group, ext = 'pdf') {
     parts = ['Rapport Qualité', produit, partenaire, `du ${date}`, ref];
   }
   const name = safeName(parts.filter(Boolean).join(' '));
-  return (name || 'Rapport Qualité') + '.' + ext;
+  const suffix = ext === 'pdf' && lang && lang !== 'fr' ? ` (${String(lang).toUpperCase()})` : '';
+  return (name || 'Rapport Qualité') + suffix + '.' + ext;
 }
 
 /* Ancien nom, conservé le temps que les appels existants migrent. */
-export const pdfFilename = (report, group) => reportFilename(report, group, 'pdf');
+export const pdfFilename = (report, group, lang) => reportFilename(report, group, 'pdf', lang);

@@ -204,7 +204,7 @@ class Query {
 function tidy(text) {
   try {
     const d = JSON.parse(text);
-    if (d.message?.includes('row-level security')) return "Droits insuffisants : votre compte doit être validé par un administrateur.";
+    if (d.message?.includes('row-level security')) return "Droits insuffisants : votre rôle ne permet pas cette action, ou votre compte n'est pas encore validé.";
     return d.message || d.hint || text;
   } catch { return text; }
 }

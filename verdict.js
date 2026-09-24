@@ -517,7 +517,7 @@ function receptionSummary(group, pressures, type, tones) {
   if (!rs.sampled && !rs.weighedCount) return null;
   const r2 = (v) => (v == null ? null : Math.round(v * 100) / 100);
   return { light: r2(rs.lightPct), loss: r2(rs.lossPct), under: r2(rs.underPct),
-           checked: rs.checkedTotal, fruits: rs.fruitsTotal,
+           checked: rs.checkedTotal, cut: rs.cutTotal, fruits: rs.fruitsTotal,
            ext: rs.extCount, int: rs.intCount, underCount: rs.underCount, weighed: rs.weighedCount,
            tone: {
              light: rs.sampled ? tones?.light || null : null,

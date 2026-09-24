@@ -1,6 +1,6 @@
 /* Réglages : produits & critères, partenaires, équipe, compte. */
 
-import { state, shell, go, back, loadRefs, logout } from './app.js';
+import { state, shell, go, back, loadRefs, logout, canManage, isAdmin } from './app.js';
 import { local, queue, sync, pendingCount } from './store.js';
 import { db, auth } from './supa.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
@@ -12,57 +12,63 @@ import { LANGS, builtinTranslation } from './report-pdf.js';
 import { pressureConfig, fmtP, RANGE_TOL, SEV_STEPS, LIMITS, clampP, sizeTableOf, boxKey } from './pressure.js';
 import { PACKAGING_KINDS, TYPE_LIST, TYPE_IDS, reportType, appliesTo, typesLabel,
          isHidden, fieldLive, normalizeSections } from './report-types.js';
-import { $, $$, esc, icon, toast, sheet, confirmSheet, getTheme, setTheme } from './ui.js';
+import { $, $$, esc, icon, toast, sheet, confirmSheet, getTheme, setTheme, initials } from './ui.js';
+import { CONFIG } from './config.js';
 
-const isAdmin = () => state.profile?.role === 'admin';
-
+/* Réglages : le compte en tête, puis l'administration (administrateur
+   et responsable) et les préférences de l'appareil. L'apparence se
+   règle sur place, sans ouvrir de fenêtre. */
 export function renderSettings() {
+  const p = state.profile || {};
+  const nGroups = state.groups.filter(g => g.active !== false).length;
+  const item = (go, ic, title, sub) => `<button class="menu-item" data-go="${go}"><span class="ic n">${icon(ic)}</span>
+    <span class="tx"><b>${title}</b><span>${sub}</span></span><span class="chev">${icon('chevR')}</span></button>`;
   shell('Réglages', `
+   <div class="narrow">
+    <button class="card me-card" data-go="#/settings/account">
+      <span class="avatar lg">${esc(initials(p.full_name || p.email))}</span>
+      <span class="tx"><b>${esc(p.full_name || '')}</b><span>${esc(p.email || '')}</span></span>
+      <span class="pill brand">${esc(roleLabel(p.role))}</span>
+    </button>
+
+    ${canManage() ? `<div class="label-up">Administration</div>
     <div class="menu">
-      ${isAdmin() ? `
-      <button class="menu-item" data-go="#/settings/groups"><span class="ic n">${icon('clipboard')}</span>
-        <span class="tx"><b>Produits &amp; critères</b><span>Grilles de contrôle et seuils</span></span><span class="chev">›</span></button>
-      <button class="menu-item" data-go="#/settings/partners"><span class="ic n">${icon('truck')}</span>
-        <span class="tx"><b>Carnet d'adresses</b><span>${state.partners.length} enregistré${state.partners.length > 1 ? 's' : ''}</span></span><span class="chev">›</span></button>
-      <button class="menu-item" data-go="#/settings/users"><span class="ic n">${icon('users')}</span>
-        <span class="tx"><b>Équipe</b><span>Valider et gérer les accès</span></span><span class="chev">›</span></button>
-      <button class="menu-item" data-go="#/settings/photos"><span class="ic n">${icon('image')}</span>
-        <span class="tx"><b>Photos et espace</b><span>Place occupée, archivage d'une période</span></span><span class="chev">›</span></button>` : ''}
-      <button class="menu-item" id="themeBtn"><span class="ic n">${icon('theme')}</span>
-        <span class="tx"><b>Apparence</b><span>${themeLabel()}</span></span><span class="chev">›</span></button>
-      <button class="menu-item" data-go="#/settings/account"><span class="ic n">${icon('badge')}</span>
-        <span class="tx"><b>Mon compte</b><span>${esc(state.profile?.email || '')}</span></span><span class="chev">›</span></button>
-    </div>`,
-    { back: () => back('#/'),
+      ${item('#/settings/groups', 'clipboard', 'Produits &amp; critères', `${nGroups} produit${nGroups > 1 ? 's' : ''} · grilles de contrôle et seuils`)}
+      ${item('#/settings/partners', 'truck', "Carnet d'adresses", `${state.partners.length} partenaire${state.partners.length > 1 ? 's' : ''} · références de pression`)}
+      ${item('#/settings/users', 'users', 'Équipe', 'Valider et gérer les accès')}
+      ${item('#/settings/photos', 'image', 'Photos et espace', "Place occupée, archivage d'une période")}
+    </div>` : ''}
+
+    <div class="label-up">Cet appareil</div>
+    <div class="menu">
+      <div class="menu-item theme-row"><span class="ic n">${icon('theme')}</span>
+        <span class="tx"><b>Apparence</b><span>Sombre : moins éblouissant en chambre froide</span></span>
+        <span class="seg sm" id="themeSeg">${THEMES.map(([v, name]) =>
+          `<button type="button" data-t="${v}" aria-pressed="${getTheme() === v}">${name}</button>`).join('')}</span>
+      </div>
+      ${item('#/settings/account', 'badge', 'Mon compte', 'Mot de passe, déconnexion')}
+    </div>
+
+    <p class="about" style="margin-top:22px">${esc(state.settings.company)} · Mehadrin QC ${esc(CONFIG.version)}</p>
+   </div>`,
+    { tab: 'settings', root: true,
       onMount() {
         $$('[data-go]').forEach(b => b.onclick = () => go(b.dataset.go));
-        $('#themeBtn').onclick = openTheme;
+        $$('#themeSeg [data-t]').forEach(b => b.onclick = () => {
+          setTheme(b.dataset.t);
+          $$('#themeSeg [data-t]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+          toast('Apparence : ' + themeLabel().toLowerCase());
+        });
       } });
 }
 
 /* ========================== APPARENCE ========================== */
 const THEMES = [
-  ['auto',  'Automatique', "Suit le réglage du téléphone"],
-  ['light', 'Clair',       "Fond blanc, plus lisible en plein jour"],
-  ['dark',  'Sombre',      "Moins éblouissant en chambre froide"]
+  ['auto',  'Auto',   "Suit le réglage du téléphone"],
+  ['light', 'Clair',  "Fond blanc, plus lisible en plein jour"],
+  ['dark',  'Sombre', "Moins éblouissant en chambre froide"]
 ];
-const themeLabel = () => THEMES.find(t => t[0] === getTheme())?.[1] || 'Automatique';
-
-function openTheme() {
-  sheet('Apparence', `<div class="list">${THEMES.map(([v, name, desc]) => `
-    <button class="menu-item" data-t="${v}">
-      <span class="ic n">${icon(v === 'auto' ? 'theme' : v === 'dark' ? 'moon' : 'sun')}</span>
-      <span class="tx"><b>${name}</b><span>${esc(desc)}</span></span>
-      <span class="chev">${getTheme() === v ? '✓' : '›'}</span></button>`).join('')}</div>`,
-    { onMount(el, close) {
-        el.querySelectorAll('[data-t]').forEach(b => b.onclick = () => {
-          setTheme(b.dataset.t);
-          close();
-          renderSettings();
-          toast('Apparence : ' + themeLabel().toLowerCase());
-        });
-      } });
-}
+const themeLabel = () => ({ auto: 'Automatique', light: 'Clair', dark: 'Sombre' }[getTheme()] || 'Automatique');
 
 
 /* ------------------------ traductions ------------------------
@@ -135,28 +141,25 @@ const readI18n = (el) => {
 
 /* ====================== PRODUITS & CRITÈRES ====================== */
 export function renderGroups() {
+  const groups = [...state.groups].sort((a, b) => (a.active === false) - (b.active === false));
   shell('Produits & critères', `
-    <div class="card pad" style="margin-bottom:12px">
-      <p style="margin:0 0 8px;font-size:13.5px"><b>Une grille par produit.</b> La grille, c'est la liste
-      de ce qu'on regarde pendant un contrôle — taches, température, matière sèche — avec, pour chacun,
-      à partir de quand ça pose problème.</p>
-      <p class="muted" style="margin:0;font-size:12.5px">Ouvrez un produit pour voir sa grille.
-      Tout y est modifiable, et chaque modification peut être annulée juste après.</p>
-    </div>
-    <div class="list">
-      ${[...state.groups].sort((a, b) => (a.active === false) - (b.active === false)).map(g => `
-        <button class="rep" data-id="${esc(g.id)}">
-          <div class="rep-top"><b>${esc(g.config?.icon || '')} ${esc(g.name)}</b>${g.active === false ? '<span class="pill">supprimé</span>' : ''}</div>
-          <div class="rep-meta"><span>${(g.config?.sections || []).length} sections</span>
-            <span>${(g.config?.sections || []).reduce((n, s) => n + (s.fields || []).length, 0)} critères</span>
-            <span>tolérance ${g.config?.tolerance ?? 10} %</span></div>
-        </button>`).join('') || '<div class="empty"><div class="big">📦</div><p>Aucun groupe de produit.</p></div>'}
-    </div>
+   <div class="narrow">
+    <div class="info-box">${icon('info')}<p><b>Une grille par produit</b> : ce qu'on regarde pendant un
+      contrôle — taches, température, matière sèche — et, pour chacun, à partir de quand ça pose problème.
+      Tout est modifiable, et chaque modification peut être annulée juste après.</p></div>
+    ${groups.length ? `<div class="menu">${groups.map(g => {
+      const nf = (g.config?.sections || []).reduce((n, s) => n + (s.fields || []).length, 0);
+      return `<button class="menu-item" data-id="${esc(g.id)}">
+        <span class="ic n" style="font-size:21px">${esc(g.config?.icon || '🧺')}</span>
+        <span class="tx"><b>${esc(g.name)}</b><span>${(g.config?.sections || []).length} sections · ${nf} critères · tolérance ${g.config?.tolerance ?? 10} %</span></span>
+        ${g.active === false ? '<span class="pill sm">supprimé</span>' : ''}<span class="chev">${icon('chevR')}</span></button>`;
+    }).join('')}</div>` : `<div class="card empty"><div class="big">📦</div><p>Aucun groupe de produit.</p></div>`}
     <div class="btn-row" style="margin-top:14px">
-      <button class="btn ghost" id="add">${icon('plus')} Nouveau groupe</button>
+      <button class="btn ghost" id="add">${icon('plus')} Nouveau produit</button>
       <button class="btn ghost" id="restore">Restaurer les grilles par défaut</button>
-    </div>`,
-    { back: () => back('#/settings'),
+    </div>
+   </div>`,
+    { back: () => back('#/settings'), tab: 'settings',
       onMount() {
         $$('[data-id]').forEach(b => b.onclick = () => go('#/settings/groups/' + b.dataset.id));
         $('#add').onclick = addGroup;
@@ -179,7 +182,7 @@ export function renderGroups() {
 }
 
 function addGroup() {
-  sheet('Nouveau groupe de produit', `
+  sheet('Nouveau produit', `
     <div class="field"><label for="gn">Nom</label><input type="text" id="gn" placeholder="Ex. Tomate, Raisin…"></div>
     <div class="field"><label for="gi">Emoji (facultatif)</label><input type="text" id="gi" maxlength="4" placeholder="🍅"></div>
     <div class="field"><label for="gb">Partir de</label>
@@ -215,6 +218,7 @@ function addGroup() {
    demandée. */
 let gridType = '';
 let gridTypeOwner = '';
+let edTab = 'grid';     // onglet ouvert de l'éditeur, gardé d'un redessin à l'autre
 
 /* Visible dans la vue courante de l'éditeur. En vue « Tous les
    rapports », seul le masquage compte ; dans une vue filtrée, la portée
@@ -269,7 +273,7 @@ export function renderGroupEditor(id, fresh = false) {
   const keepOpen = again ? [...document.querySelectorAll('details.sec[open]')]
     .map(d => d.dataset.sid || `#${d.dataset.si}`) : [];
   const keepY = again && document.body.style.position !== 'fixed' ? window.scrollY : null;
-  if (fresh || gridTypeOwner !== id) { gridType = ''; gridTypeOwner = id; }
+  if (fresh || gridTypeOwner !== id) { gridType = ''; gridTypeOwner = id; edTab = 'grid'; }
   /* Remise d'aplomb : une grille où la portée d'un critère sortait de
      celle de sa section produisait une section présente dans aucun
      rapport. La lecture s'en accommode déjà, mais on l'écrit une bonne
@@ -281,8 +285,21 @@ export function renderGroupEditor(id, fresh = false) {
      readHeader() avec le reste de l'en-tête. */
   const tbl = structuredClone(sizeTableOf(g) || { boxes: [], rows: [] });
 
+  const TABS = [['grid', 'Grille'], ['product', 'Produit'], ['measures', 'Mesures'], ['reception', 'Réception']];
+  const pane = (id) => `data-pane="${id}"${edTab === id ? '' : ' hidden'}`;
+  const nCrit = (cfg.sections || []).reduce((n, x) => n + (x.fields || []).length, 0);
+
+  /* Quatre onglets plutôt qu'une page de sept écrans : la grille (ce
+     qu'on touche le plus souvent), le produit, les mesures (pressions et
+     poids), la réception. Tout reste dans la page — un onglet caché
+     garde sa saisie, et « Enregistrer » les écrit tous. */
   shell(g.name, `
+    <div class="seg ed-tabs" id="edTabs" role="tablist">${TABS.map(([id, label]) =>
+      `<button type="button" role="tab" data-tab="${id}" aria-pressed="${edTab === id}">${label}</button>`).join('')}</div>
+
+    <section ${pane('product')}>
     <div class="card pad">
+      <div class="card-h"><h3>Produit</h3></div>
       <div class="row2">
         <div class="field"><label for="nm">Nom</label><input type="text" id="nm" value="${esc(g.name)}"></div>
         <div class="field"><label for="ic">Emoji</label><input type="text" id="ic" maxlength="4" value="${esc(cfg.icon || '')}"></div>
@@ -293,14 +310,33 @@ export function renderGroupEditor(id, fresh = false) {
       <div class="field"><label for="vars">Variétés proposées</label>
         <textarea id="vars" style="min-height:64px">${esc((cfg.varieties || []).join(', '))}</textarea>
         <div class="hint">Séparées par des virgules.</div></div>
-      <div class="field"><label for="cals">Calibres proposés</label>
+      <div class="field" style="margin-bottom:0"><label for="cals">Calibres proposés</label>
         <textarea id="cals" style="min-height:64px">${esc((cfg.calibres || []).join(', '))}</textarea></div>
     </div>
 
-    <div class="card pad" style="margin-top:12px">
-      <h3 style="font-size:14.5px;margin-bottom:4px">Protocole de pression</h3>
-      <p class="muted" style="margin:0 0 12px">Relevé au pénétromètre, facultatif à la saisie.
-      Pour l'avocat : les deux joues de 5 fruits par palette.</p>
+    <!-- Les trois indices du rapport reposaient sur des seuils écrits
+         dans le code. « Mauvaise à partir de 3 défauts » n'est pas une
+         vérité universelle : c'est une décision de l'entreprise, qui
+         change d'un produit à l'autre. -->
+    <div class="card pad">
+      <div class="card-h"><h3>Les trois indices du verdict</h3></div>
+      <p class="muted" style="margin:-4px 0 12px">Qualité, Conservabilité et Évaluation se calculent
+        à partir des critères notés. Voici à partir de quand chacun bascule.</p>
+      <button class="btn ghost block" id="verdictBtn">${icon('gear')} Régler le barème des indices</button>
+      <div class="hint" id="verdictSum" style="margin-top:8px">${verdictSummary(g)}</div>
+    </div>
+
+    <div class="btn-row" style="margin-top:14px">
+      ${g.active === false
+        ? '<button class="btn ghost" id="undelg">Remettre en service</button>'
+        : `<button class="btn ghost danger" id="delg">${icon('trash')} Supprimer le produit</button>`}
+    </div>
+    </section>
+
+    <section ${pane('measures')}>
+    <div class="card pad">
+      <div class="card-h"><h3>Protocole de pression</h3></div>
+      <p class="muted" style="margin:-4px 0 12px">Relevé au pénétromètre. Pour l'avocat : les deux joues de 5 fruits par palette.</p>
       <div class="row3">
         <div class="field"><label for="pf">Fruits / palette</label>
           <input type="number" id="pf" min="1" step="1" value="${pr.fruits}"></div>
@@ -309,26 +345,26 @@ export function renderGroupEditor(id, fresh = false) {
         <div class="field"><label for="prf">Référence</label>
           <input type="number" id="prf" step="0.1" min="${LIMITS.min}" max="${LIMITS.max}" value="${pr.ref}"></div>
       </div>
-      <div class="hint">La référence sert au bouton de remplissage rapide et à la ligne repère du graphique.
-        Le pénétromètre mesure de ${LIMITS.min} à ${LIMITS.max} ${esc(pr.unit)} : les valeurs sont bornées à cet intervalle.</div>
+      <p class="hint">La référence sert au remplissage rapide et à la ligne repère du graphique.
+        Le pénétromètre mesure de ${LIMITS.min} à ${LIMITS.max} ${esc(pr.unit)} : les valeurs sont bornées à cet intervalle.</p>
     </div>
 
-    <div class="card pad" style="margin-top:12px">
-      <h3 style="font-size:14.5px;margin-bottom:4px">Poids minimum par calibre</h3>
-      <p class="muted" style="margin:0 0 12px">À la réception comme au contrôle production, un fruit
-      pesé sous ce seuil est signalé comme sous-calibré. Laissez vide pour ne rien contrôler sur ce
-      calibre. Le poids maximum n'est pas vérifié : un fruit plus gros profite au client.</p>
+    <div class="card pad">
+      <div class="card-h"><h3>Poids minimum par calibre</h3></div>
+      <p class="muted" style="margin:-4px 0 12px">Un fruit pesé sous ce seuil est signalé comme sous-calibré
+      (réception et contrôle production). Laissez vide pour ne rien contrôler sur ce calibre. Le poids
+      maximum n'est pas vérifié : un fruit plus gros profite au client.</p>
       <div class="wgrid">${weightsHtml(cfg)}</div>
     </div>
 
     <!-- Mangue : le calibre dépend du colis. La table reprend la feuille
          du quai « Cal selon pack / ± poids ». -->
-    <div class="card pad" style="margin-top:12px">
-      <h3 style="font-size:14.5px;margin-bottom:4px">Poids par calibre selon le colis</h3>
-      <p class="muted" style="margin:0 0 12px">Quand le calibre dépend du poids du colis (mangue :
+    <div class="card pad">
+      <div class="card-h"><h3>Poids par calibre selon le colis</h3></div>
+      <p class="muted" style="margin:-4px 0 12px">Quand le calibre dépend du poids du colis (mangue :
         un calibre 10 pèse 250–315 g en colis de 3 kg, 600–725 g en 6 kg), chaque ligne donne une
         tranche de poids et le calibre correspondant pour chaque colis. Elle prime sur le poids
-        minimum ci-dessus. Sans table, le calibre ne dépend pas du colis (avocat).</p>
+        minimum. Sans table, le calibre ne dépend pas du colis (avocat).</p>
       <div id="stBox"></div>
       <div class="st-add">
         <button type="button" class="btn ghost sm" id="stAddRow">${icon('plus')} Ligne</button>
@@ -337,14 +373,17 @@ export function renderGroupEditor(id, fresh = false) {
         <button type="button" class="btn ghost sm" id="stAddBox">${icon('plus')} Colis</button></span>
       </div>
     </div>
+    </section>
 
     <!-- Réception : pressions obligatoires, échantillon et défauts
          comptés palette par palette. -->
-    <div class="card pad" style="margin-top:12px">
-      <h3 style="font-size:14.5px;margin-bottom:4px">Réception : contrôle par palette</h3>
-      <p class="muted" style="margin:0 0 12px">Chaque palette du lot se contrôle : pressions, pesée
-        des fruits de pression, et défauts comptés sur les colis ouverts.</p>
-      <label class="opt-row" style="margin:0 0 12px">
+    <section ${pane('reception')}>
+    <div class="card pad">
+      <div class="card-h"><h3>Contrôle par palette</h3></div>
+      <p class="muted" style="margin:-4px 0 12px">À la réception, chaque palette du lot se contrôle : pressions, pesée
+        des fruits de pression, défauts externes comptés sur les colis ouverts et défauts internes sur les
+        fruits coupés.</p>
+      <label class="opt-row" style="margin:0 0 14px">
         <input type="checkbox" id="prReq" ${pressureRequired(g, 'reception') ? 'checked' : ''}>
         <span>Pressions obligatoires en réception<small>Le rapport ne s'enregistre pas tant que
           chaque palette du lot n'a pas tous ses relevés. « Tout à ${pr.ref} » reste disponible.</small></span></label>
@@ -355,29 +394,23 @@ export function renderGroupEditor(id, fresh = false) {
           <input type="number" id="smpK" min="0" step="0.5" value="${samplingCfg(g).perKg ?? ''}"
             placeholder="son poids réel"></div>
       </div>
-      <div class="hint" id="smpHint">${samplingHint(g)}</div>
-      <h4 style="font-size:13px;margin:16px 0 4px">Défauts comptés par palette</h4>
-      <p class="hint" style="margin:0 0 8px">Léger ou perte, externe ou interne. Un défaut relié à un
+      <div class="field"><label for="smpC">Fruits coupés par palette (défauts internes)</label>
+        <input type="number" id="smpC" min="1" step="1" inputmode="numeric" value="${samplingCfg(g).cut}"
+          style="max-width:140px"></div>
+      <p class="hint" id="smpHint" style="margin-top:-4px">${samplingHint(g)}</p>
+    </div>
+    <div class="card pad">
+      <div class="card-h"><h3>Défauts comptés par palette</h3></div>
+      <p class="muted" style="margin:-4px 0 8px">Léger ou perte, externe ou interne. Un défaut relié à un
         critère de la grille le remplit tout seul (% du lot).</p>
       <div id="defRows"></div>
-      <button type="button" class="btn ghost sm" id="defAdd" style="margin-top:6px">${icon('plus')} Défaut</button>
+      <button type="button" class="btn ghost sm" id="defAdd" style="margin-top:8px">${icon('plus')} Défaut</button>
     </div>
+    </section>
 
-    <!-- Les trois indices du rapport reposaient sur des seuils écrits
-         dans le code. « Mauvaise à partir de 3 défauts » n'est pas une
-         vérité universelle : c'est une décision de l'entreprise, qui
-         change d'un produit à l'autre. -->
-    <div class="card pad" style="margin-top:12px">
-      <h3 style="font-size:14.5px;margin-bottom:4px">Les trois indices du verdict</h3>
-      <p class="muted" style="margin:0 0 12px">Qualité, Conservabilité et Évaluation se calculent
-        à partir des critères notés. Voici à partir de quand chacun bascule.</p>
-      <button class="btn ghost block" id="verdictBtn">${icon('gear')} Régler le barème des indices</button>
-      <div class="hint" id="verdictSum" style="margin-top:8px">${verdictSummary(g)}</div>
-    </div>
-
-    <h3 style="margin:18px 0 6px;font-size:15px">La grille de contrôle</h3>
-    <p class="muted" style="margin:0 0 10px;font-size:12.5px">Les critères sont rangés par section.
-      Touchez un critère pour changer son barème ; touchez « Critère » pour en ajouter un.</p>
+    <section ${pane('grid')}>
+    <p class="muted" style="margin:0 2px 10px">${(cfg.sections || []).length} sections · ${nCrit} critères.
+      Touchez un critère pour changer son barème ; « Critère » en ajoute un.</p>
     <!-- On ne contrôle pas les mêmes choses à l'arrivée d'un conteneur
          et sur une chaîne de conditionnement. Ce filtre montre la
          grille telle qu'elle se présentera pour un type de rapport
@@ -386,9 +419,9 @@ export function renderGroupEditor(id, fresh = false) {
       <button class="chip" data-tf="" aria-pressed="${!gridType}">Tous les rapports</button>
       ${TYPE_LIST.map(T => `<button class="chip" data-tf="${T.id}" aria-pressed="${gridType === T.id}">${esc(T.short)}</button>`).join('')}
     </div>
-    ${gridType ? `<p class="muted" style="margin:0 0 10px">Grille telle qu'elle apparaîtra
+    ${gridType ? `<div class="info-box">${icon('eye')}<p>Grille telle qu'elle apparaîtra
       dans un ${esc(reportType(gridType).title.toLowerCase())}. Ce qui n'y figure pas
-      reste affiché en grisé : rien ne disparaît, tout se réaffiche d'une touche.</p>` : ''}
+      reste affiché en grisé : rien ne disparaît, tout se réaffiche d'une touche.</p></div>` : ''}
     <!-- Toutes les sections sont TOUJOURS listées, filtre ou pas. Les
          masquer dans la vue filtrée revenait à les rendre
          irrécupérables : une section vide ne pouvait plus recevoir de
@@ -398,54 +431,57 @@ export function renderGroupEditor(id, fresh = false) {
     ${(cfg.sections || []).map((sec, si) => {
       const live = secLive(sec);                       // visible dans la vue courante
       const all  = (sec.fields || []);
-      const shown = all.filter(f => fieldLive(sec, f, gridType) || !gridType);
       const count = gridType ? all.filter(f => fieldLive(sec, f, gridType)).length : all.length;
       const last  = (cfg.sections || []).length - 1;
       return `
       <details class="sec${live ? '' : ' off'}" data-si="${si}" data-sid="${esc(sec.id || '')}">
         <summary>${esc(sec.label)} <span class="count">${count}</span>
-        ${scopePill(sec, live)} <span class="caret">▾</span></summary>
+        ${scopePill(sec, live)} <span class="caret">${icon('chevD')}</span></summary>
         <div class="body">
           ${all.map((f, fi) => {
             const fl = fieldLive(sec, f, gridType);
             return `
             <div class="crit${fl ? '' : ' off'}" data-fi="${fi}">
               <span class="ord">
-                <button type="button" class="ordb" data-mf="${si}.${fi}.-1"${fi === 0 ? ' disabled' : ''} aria-label="Monter">▲</button>
-                <button type="button" class="ordb" data-mf="${si}.${fi}.1"${fi === all.length - 1 ? ' disabled' : ''} aria-label="Descendre">▼</button>
+                <button type="button" class="ordb" data-mf="${si}.${fi}.-1"${fi === 0 ? ' disabled' : ''} aria-label="Monter">${icon('up')}</button>
+                <button type="button" class="ordb" data-mf="${si}.${fi}.1"${fi === all.length - 1 ? ' disabled' : ''} aria-label="Descendre">${icon('dn')}</button>
               </span>
               <span class="dot ${sevDot(f)}"></span>
               <span class="lb" data-edit="${si}.${fi}">${esc(f.label)}<small>${describe(f)}</small></span>
               ${scopePill(f, fl, sec)}
               <button type="button" class="ordb wide" data-mask="${si}.${fi}"
-                aria-label="${fl ? 'Masquer' : 'Afficher'}">${fl ? '🚫' : '👁'}</button>
+                aria-label="${fl ? 'Masquer' : 'Afficher'}" title="${fl ? 'Masquer' : 'Afficher'}">${icon(fl ? 'eye' : 'eyeOff')}</button>
             </div>`; }).join('')}
           ${all.length ? '' : `<p class="muted" style="margin:0">Section vide. Touchez « Critère » pour la remplir.</p>`}
           ${count === 0 && all.length && gridType
             ? `<p class="hint" style="margin:8px 0 0">Aucun critère de cette section n'apparaît
                dans un ${esc(reportType(gridType).title.toLowerCase())}.</p>` : ''}
-          <div class="btn-row" style="margin-top:10px">
+          <div class="btn-row" style="margin-top:12px">
             <span class="ord">
-              <button type="button" class="ordb" data-ms="${si}.-1"${si === 0 ? ' disabled' : ''} aria-label="Monter la section">▲</button>
-              <button type="button" class="ordb" data-ms="${si}.1"${si === last ? ' disabled' : ''} aria-label="Descendre la section">▼</button>
+              <button type="button" class="ordb" data-ms="${si}.-1"${si === 0 ? ' disabled' : ''} aria-label="Monter la section">${icon('up')}</button>
+              <button type="button" class="ordb" data-ms="${si}.1"${si === last ? ' disabled' : ''} aria-label="Descendre la section">${icon('dn')}</button>
             </span>
             <button class="btn ghost sm" data-addf="${si}">${icon('plus')} Critère</button>
             <button class="btn ghost sm" data-editsec="${si}">${icon('edit')} Titre &amp; portée</button>
-            <button class="btn ghost sm" data-masksec="${si}">${live ? 'Masquer' : 'Afficher'}${
+            <button class="btn ghost sm" data-masksec="${si}">${icon(live ? 'eyeOff' : 'eye')} ${live ? 'Masquer' : 'Afficher'}${
               gridType ? ` ici` : ''}</button>
-            <button class="btn ghost sm danger" data-delsec="${si}">Supprimer</button>
+            <button class="btn ghost sm danger" data-delsec="${si}">${icon('trash')} Supprimer</button>
           </div>
         </div></details>`; }).join('')}
 
     <div class="btn-row" style="margin-top:12px">
       <button class="btn ghost" id="addsec">${icon('plus')} Section</button>
-      ${g.active === false
-        ? '<button class="btn ghost" id="undelg">Remettre en service</button>'
-        : '<button class="btn ghost danger" id="delg">Supprimer le groupe</button>'}
     </div>
-    <div class="sticky-actions"><button class="btn block" id="save">Enregistrer</button></div>`,
-    { back: () => back('#/settings/groups'),
+    </section>
+    <div class="sticky-actions"><button class="btn" id="save">${icon('check')} Enregistrer</button></div>`,
+    { back: () => back('#/settings/groups'), tab: 'settings', sub: 'Grille de contrôle et réglages du produit',
       onMount() {
+        $$('#edTabs [data-tab]').forEach(b => b.onclick = () => {
+          edTab = b.dataset.tab;
+          $$('#edTabs [data-tab]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+          $$('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== edTab; });
+          window.scrollTo(0, 0);
+        });
         /* L'en-tête (nom, tolérance, variétés, calibres, protocole)
            n'était lu qu'au moment d'enregistrer. Or la page se redessine
            à chaque geste — filtre de type, ajout de critère, suppression
@@ -454,7 +490,7 @@ export function renderGroupEditor(id, fresh = false) {
            frappe : le redessin repart de valeurs à jour, et « Enregistrer »
            n'a plus qu'à persister. */
         readHeader();
-        ['#nm', '#ic', '#tol', '#vars', '#pf', '#ps', '#prf', '#smpB', '#smpK'].forEach(s => {
+        ['#nm', '#ic', '#tol', '#vars', '#pf', '#ps', '#prf', '#smpB', '#smpK', '#smpC'].forEach(s => {
           const i = $(s); if (i) i.oninput = () => { readHeader(); const h = $('#smpHint'); if (h) h.textContent = samplingHint(g); };
         });
         const reqEl = $('#prReq');
@@ -506,9 +542,10 @@ export function renderGroupEditor(id, fresh = false) {
           };
           g.config.sizeTable = cleanSizeTable(tbl);
           if ($('#smpB')) {
-            const kg = num(v('#smpK'));
+            const kg = num(v('#smpK')), cut = num(v('#smpC'));
             g.config.sampling = { boxes: Math.max(1, num(v('#smpB')) ?? samplingCfg(g).boxes),
-                                  perKg: kg > 0 ? kg : null };
+                                  perKg: kg > 0 ? kg : null,
+                                  cut: cut > 0 ? Math.round(cut) : samplingCfg(g).cut };
           }
         }
 
@@ -747,11 +784,14 @@ function cleanSizeTable(tbl) {
 /* « calibre 16 : 16 fruits par colis de 4 kg, 160 contrôlés » — la
    règle, dite avec un exemple, pour qu'on la vérifie d'un coup d'œil. */
 function samplingHint(g) {
-  const { boxes, perKg } = samplingCfg(g);
+  const { boxes, perKg, cut } = samplingCfg(g);
   const f = (n) => String(Math.round(n * 10) / 10).replace('.', ',');
-  if (!perKg) return `Exemple : calibre 12 → 12 fruits par colis, ${boxes * 12} fruits contrôlés par palette.`;
+  const int = ` Défauts internes : ${cut} fruits coupés par palette — un défaut interne se rapporte à ces ` +
+              `${cut} fruits (1 fruit touché = ${f(100 / cut)} %). Plus de fruits coupés sur une palette : ` +
+              `le nombre se corrige sur la palette.`;
+  if (!perKg) return `Exemple : calibre 12 → 12 fruits par colis, ${boxes * 12} fruits contrôlés par palette.` + int;
   return `Exemple : calibre 16 en colis de ${f(perKg)} kg → 16 fruits par colis, ${boxes * 16} contrôlés ; ` +
-         `en colis de 10 kg → ${f(16 * 10 / perKg)} par colis, ${f(boxes * 16 * 10 / perKg)} contrôlés.`;
+         `en colis de 10 kg → ${f(16 * 10 / perKg)} par colis, ${f(boxes * 16 * 10 / perKg)} contrôlés.` + int;
 }
 
 /* Liste des défauts comptés. Dès qu'on la touche, elle s'enregistre
@@ -781,8 +821,8 @@ function paintDefects(g) {
       <select data-df="link" aria-label="Critère rempli"><option value="">Ne remplit aucun critère</option>${pct.map(f =>
         `<option value="${esc(f.key)}"${f.key === link ? ' selected' : ''}>Remplit : ${esc(f.label)}</option>`).join('')}</select>
       <span class="ord">
-        <button type="button" class="ordb" data-dm="-1" aria-label="Monter"${i === 0 ? ' disabled' : ''}>▲</button>
-        <button type="button" class="ordb" data-dm="1" aria-label="Descendre"${i === defs.length - 1 ? ' disabled' : ''}>▼</button>
+        <button type="button" class="ordb" data-dm="-1" aria-label="Monter"${i === 0 ? ' disabled' : ''}>${icon('up')}</button>
+        <button type="button" class="ordb" data-dm="1" aria-label="Descendre"${i === defs.length - 1 ? ' disabled' : ''}>${icon('dn')}</button>
       </span>
       <button type="button" class="icon-btn" data-dx aria-label="Retirer">${icon('x')}</button>
     </div>`;
@@ -1396,27 +1436,50 @@ const num = (v) => {
 };
 const slug = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 
-/* ======================== PARTENAIRES ======================== */
+/* ======================== PARTENAIRES ========================
+   Un onglet par sorte de partenaire, une recherche, et une ligne par
+   contact : initiales, nom, coordonnées s'il y en a. */
+let pKind = 'fournisseur';
+const KINDS = [['fournisseur', 'Fournisseurs'], ['client', 'Clients'], ['transporteur', 'Transporteurs']];
+
 export function renderPartners() {
   const by = (k) => state.partners.filter(p => p.kind === k);
-  const block = (title, kind) => `
-    <h3 style="margin:16px 0 8px;font-size:15px">${title} <span class="muted">(${by(kind).length})</span></h3>
-    <div class="list">${by(kind).map(p => `
-      <button class="rep" data-p="${esc(p.id)}">
-        <div class="rep-top"><b>${esc(p.name)}</b>${
-          refCount(p) ? `<span class="pill n">${refCount(p)} référence${refCount(p) > 1 ? 's' : ''}</span>` : ''}</div>
-        <div class="rep-meta">${[p.country, p.email, p.phone].filter(Boolean).map(esc).join(' · ') || '<span>—</span>'}</div>
-      </button>`).join('') || '<p class="muted">Aucun pour l\'instant.</p>'}</div>`;
-
   shell("Carnet d'adresses", `
-    ${block('Fournisseurs', 'fournisseur')}
-    ${block('Clients', 'client')}
-    ${block('Transporteurs', 'transporteur')}
-    <div class="btn-row" style="margin-top:16px"><button class="btn ghost block" id="add">${icon('plus')} Ajouter</button></div>`,
-    { back: () => back('#/settings'),
+   <div class="narrow">
+    <div class="seg" id="pKind" style="margin-bottom:10px">${KINDS.map(([k, label]) =>
+      `<button type="button" data-k="${k}" aria-pressed="${pKind === k}">${label} <span class="n" style="opacity:.7">${by(k).length}</span></button>`).join('')}</div>
+    <label class="search" style="margin-bottom:12px;display:block">${icon('search')}
+      <input type="search" id="pq" placeholder="Rechercher un nom, un pays…" autocomplete="off" aria-label="Rechercher un partenaire"></label>
+    <div id="pList"></div>
+    <button class="btn ghost block" id="add" style="margin-top:14px">${icon('plus')} Ajouter un partenaire</button>
+   </div>`,
+    { back: () => back('#/settings'), tab: 'settings',
+      actions: `<button class="icon-btn" id="addTop" aria-label="Ajouter un partenaire">${icon('plus')}</button>`,
       onMount() {
-        $$('[data-p]').forEach(b => b.onclick = () => editPartner(state.partners.find(p => p.id === b.dataset.p)));
+        const paint = () => {
+          const q = ($('#pq')?.value || '').trim().toLowerCase();
+          const rows = by(pKind).filter(p => !q || [p.name, p.country, p.email, p.phone].filter(Boolean).join(' ').toLowerCase().includes(q));
+          $('#pList').innerHTML = rows.length ? `<div class="menu">${rows.map(p => {
+            const meta = [p.country, p.email, p.phone].filter(Boolean).join(' · ');
+            return `<button class="person" data-p="${esc(p.id)}">
+              <span class="avatar">${esc(initials(p.name))}</span>
+              <span class="tx"><b>${esc(p.name)}</b><span>${meta ? esc(meta) : 'Aucune coordonnée'}</span></span>
+              ${refCount(p) ? `<span class="pill sm brand">${refCount(p)} réf. pression</span>` : ''}
+              <span class="chev" style="color:var(--ink-3)">${icon('chevR')}</span></button>`;
+          }).join('')}</div>`
+            : `<div class="card empty"><div class="ico">${icon('truck')}</div><p>${q ? 'Aucun résultat.' :
+                'Aucun pour l\'instant. Un nom saisi dans un rapport s\'ajoute tout seul au carnet.'}</p></div>`;
+          $$('[data-p]').forEach(b => b.onclick = () => editPartner(state.partners.find(p => p.id === b.dataset.p)));
+        };
+        $$('#pKind [data-k]').forEach(b => b.onclick = () => {
+          pKind = b.dataset.k;
+          $$('#pKind [data-k]').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+          paint();
+        });
+        $('#pq').oninput = paint;
         $('#add').onclick = () => editPartner(null);
+        $('#addTop').onclick = () => editPartner(null);
+        paint();
       } });
 }
 
@@ -1458,7 +1521,7 @@ function refRowsHtml(refs) {
 
 function editPartner(p) {
   const isNew = !p;
-  p = p || { id: crypto.randomUUID(), kind: 'fournisseur', name: '', active: true, config: {} };
+  p = p || { id: crypto.randomUUID(), kind: pKind, name: '', active: true, config: {} };
   const refs = structuredClone(refList(p));
   sheet(isNew ? 'Nouveau partenaire' : p.name, `
     <div class="field"><label>Type</label>
@@ -1592,45 +1655,65 @@ export async function renderUsers() {
   const waiting = users.filter(u => !u.approved);
   const active = users.filter(u => u.approved);
 
-  const card = (u) => `
-    <button class="rep" data-u="${esc(u.id)}">
-      <div class="rep-top"><b>${esc(u.full_name || u.email)}</b>
-        <span class="pill ${u.approved ? 'ok' : 'warn'}">${u.approved ? roleLabel(u.role) : 'à valider'}</span></div>
-      <div class="rep-meta"><span>${esc(u.email || '')}</span></div>
-    </button>`;
+  const row = (u) => `
+    <button class="person" data-u="${esc(u.id)}">
+      <span class="avatar">${esc(initials(u.full_name || u.email))}</span>
+      <span class="tx"><b>${esc(u.full_name || u.email)}</b><span>${esc(u.email || '')}</span></span>
+      <span class="pill sm ${u.approved ? (ADMIN_ROLES.includes(u.role) ? 'brand' : '') : 'warn'}">${u.approved ? roleLabel(u.role) : 'à valider'}</span>
+      <span class="chev" style="color:var(--ink-3)">${icon('chevR')}</span></button>`;
 
   shell('Équipe', `
-    ${waiting.length ? `<h3 style="margin:0 0 8px;font-size:15px">En attente de validation</h3>
-      <div class="list">${waiting.map(card).join('')}</div>` : ''}
-    <h3 style="margin:${waiting.length ? '18px' : '0'} 0 8px;font-size:15px">Membres actifs</h3>
-    <div class="list">${active.map(card).join('') || '<p class="muted">Aucun.</p>'}</div>
-    <p class="muted" style="margin-top:16px">Un nouveau collègue crée son compte depuis l'écran de connexion :
-    il apparaît ici en attente, et vous lui ouvrez l'accès.</p>`,
-    { back: () => back('#/settings'),
+   <div class="narrow">
+    ${waiting.length ? `<div class="label-up">En attente de validation (${waiting.length})</div>
+      <div class="menu">${waiting.map(row).join('')}</div>` : ''}
+    <div class="label-up">Membres actifs (${active.length})</div>
+    <div class="menu">${active.map(row).join('') || '<p class="muted" style="padding:14px;margin:0">Aucun.</p>'}</div>
+    <div class="info-box" style="margin-top:16px">${icon('info')}<p>Un nouveau collègue crée son compte depuis l'écran de connexion :
+    il apparaît ici en attente, et vous lui ouvrez l'accès.</p></div>
+   </div>`,
+    { back: () => back('#/settings'), tab: 'settings',
       onMount() {
         $$('[data-u]').forEach(b => b.onclick = () => editUser(users.find(u => u.id === b.dataset.u)));
       } });
 }
 
-const roleLabel = (r) => ({ admin: 'Administrateur', inspecteur: 'Inspecteur', lecture: 'Lecture seule' }[r] || r);
+/* Les rôles tels qu'on les lit à l'écran. La valeur stockée ne change
+   pas (« inspecteur » pour le Contrôleur Qualité) : les comptes et les
+   règles de la base existants restent valables. */
+const ROLES = {
+  admin:       { label: 'Administrateur',         desc: 'tous les droits, dont les comptes responsables' },
+  responsable: { label: 'Responsable Murisserie', desc: 'réglages, produits et équipe' },
+  inspecteur:  { label: 'Contrôleur Qualité',     desc: 'crée et modifie ses rapports' },
+  lecture:     { label: 'Lecture seule',          desc: 'consulte et partage' }
+};
+const ADMIN_ROLES = ['admin', 'responsable'];
+export const roleLabel = (r) => ROLES[r]?.label || r;
+
+/* Qui peut toucher à quel compte. L'administrateur règle tout le monde ;
+   le responsable ne règle que les contrôleurs qualité et les lectures
+   seules, et ne peut attribuer que ces deux rôles. La base applique la
+   même règle : ce qui n'est pas proposé ici y serait refusé. */
+const assignable = () => isAdmin() ? ['inspecteur', 'lecture', 'responsable', 'admin']
+                        : canManage() ? ['inspecteur', 'lecture'] : [];
+const canEditUser = (u) => u.id !== state.profile?.id && assignable().includes(u.role);
 
 /* Écrit une modification de profil et VÉRIFIE qu'elle a porté.
    Deux refus possibles, tous deux silencieux côté serveur :
      — aucune ligne renvoyée : la règle de sécurité a écarté la ligne ;
      — ligne renvoyée mais valeurs inchangées : le garde-fou de la base
-       annule toute modification du rôle ou de la validation faite par
-       quelqu'un qui n'est pas administrateur. Il REMET les anciennes
+       annule toute modification du rôle ou de la validation qui dépasse
+       les droits de son auteur (voir `assignable`). Il REMET les anciennes
        valeurs au lieu de lever une erreur, si bien que « pas d'erreur »
        ne voulait pas dire « c'est fait ».
    On compare donc ce qui revient à ce qu'on a demandé. */
 async function patchProfile(id, patch) {
   const rows = await db('profiles').eq('id', id).update(patch);
   if (!Array.isArray(rows) || !rows.length)
-    throw new Error("Modification refusée : votre compte doit être administrateur.");
+    throw new Error("Modification refusée : vos droits ne permettent pas de modifier ce compte.");
   const got = rows[0];
   const raté = Object.keys(patch).filter(k => got[k] !== patch[k]);
   if (raté.length)
-    throw new Error("La base a annulé la modification : seul un administrateur peut changer le rôle ou valider un accès.");
+    throw new Error("La base a annulé la modification : vos droits ne permettent pas d'attribuer ce rôle.");
   return got;
 }
 
@@ -1638,29 +1721,42 @@ function editUser(u) {
   const me = u.id === state.profile?.id;
   const pending = !u.approved;
 
+  /* Un compte hors de portée — le sien, ou, pour un responsable, celui
+     d'un administrateur ou d'un autre responsable — s'affiche sans
+     commande : on dit pourquoi plutôt que de proposer un bouton que la
+     base refuserait. */
+  if (!canEditUser(u)) {
+    sheet(u.full_name || u.email, `
+      <p class="muted" style="margin:0 0 14px">${esc(u.email || '')}</p>
+      <div class="facts" style="margin-bottom:14px"><div><span>Rôle</span><b>${esc(roleLabel(u.role))}</b></div>
+        <div><span>Accès</span><b>${u.approved ? 'Validé' : 'En attente'}</b></div></div>
+      <div class="info-box" id="urLocked">${icon('info')}<p>${me ? 'Vous ne pouvez pas modifier votre propre rôle.'
+        : 'Seul un administrateur peut modifier ce compte.'}</p></div>
+      <button class="btn ghost block" id="cancel" style="margin-top:14px">Fermer</button>`,
+      { onMount(el, close) { el.querySelector('#cancel').onclick = () => close(); } });
+    return;
+  }
+
   /* Le bouton principal est celui qu'on cherche, et il fait ce qu'il
      annonce. Sur un compte en attente, c'est « Valider l'accès » —
      jusqu'ici c'était « Enregistrer », qui n'écrivait que le rôle :
-     sur un collègue déjà inspecteur, la requête ne changeait rien, la
+     sur un collègue déjà contrôleur, la requête ne changeait rien, la
      fenêtre se refermait, et le compte restait bloqué sans un mot. */
   sheet(u.full_name || u.email, `
     <p class="muted" style="margin:0 0 14px">${esc(u.email || '')}</p>
-    ${pending && !me ? `<div class="ok-box" style="margin:0 0 14px">
+    ${pending ? `<div class="ok-box" style="margin:0 0 14px">
       Ce compte attend votre validation. Choisissez son rôle, puis touchez
       <b>Valider l'accès</b> : il pourra se connecter aussitôt.</div>` : ''}
     <div class="field"><label for="ur">Rôle</label>
-      <select id="ur"${me ? ' disabled' : ''}>
-        <option value="inspecteur"${u.role === 'inspecteur' ? ' selected' : ''}>Inspecteur — crée et modifie ses rapports</option>
-        <option value="lecture"${u.role === 'lecture' ? ' selected' : ''}>Lecture seule — consulte et partage</option>
-        <option value="admin"${u.role === 'admin' ? ' selected' : ''}>Administrateur — gère produits, critères et accès</option>
-      </select>${me ? '<div class="hint">Vous ne pouvez pas modifier votre propre rôle.</div>' : ''}</div>
+      <select id="ur">${assignable().map(r =>
+        `<option value="${r}"${u.role === r ? ' selected' : ''}>${esc(ROLES[r].label)} — ${esc(ROLES[r].desc)}</option>`).join('')}
+      </select></div>
     <div class="btn-row">
       <button class="btn ghost" style="flex:1" id="cancel">Fermer</button>
-      ${me ? ''
-        : pending
-          ? `<button class="btn" style="flex:2" id="grant">Valider l'accès</button>`
-          : `<button class="btn ghost danger" style="flex:1" id="susp">Suspendre</button>
-             <button class="btn" style="flex:1" id="ok">Enregistrer</button>`}
+      ${pending
+        ? `<button class="btn" style="flex:2" id="grant">Valider l'accès</button>`
+        : `<button class="btn ghost danger" style="flex:1" id="susp">Suspendre</button>
+           <button class="btn" style="flex:1" id="ok">Enregistrer</button>`}
     </div>`,
     { onMount(el, close) {
         el.querySelector('#cancel').onclick = () => close();
@@ -1673,7 +1769,7 @@ function editUser(u) {
           try { await patchProfile(u.id, { approved: true, role }); }
           catch (e) { done(); return toast(e.message, 'err'); }
           close();
-          toast(`Accès validé · ${roleLabel(role).toLowerCase()} — ${esc(u.full_name || u.email)} peut se connecter`, '', { ms: 5000 });
+          toast(`Accès validé (${roleLabel(role)}) — ${u.full_name || u.email} peut se connecter`, '', { ms: 5000 });
           renderUsers();
         };
 
@@ -1694,39 +1790,41 @@ function editUser(u) {
           const done = busy(ok, 'Enregistrer');
           try { await patchProfile(u.id, { role }); }
           catch (e) { done(); return toast(e.message, 'err'); }
-          close(); toast(`Rôle enregistré · ${roleLabel(role).toLowerCase()}`); renderUsers();
+          close(); toast(`Rôle enregistré : ${roleLabel(role)}`); renderUsers();
         };
       } });
 }
 
 /* ========================== MON COMPTE ========================== */
 export function renderAccount() {
+  const p = state.profile || {};
   shell('Mon compte', `
-    <div class="card pad">
-      <div class="kv"><span class="k">Nom</span><span class="v">${esc(state.profile?.full_name || '')}</span></div>
-      <div class="kv"><span class="k">E-mail</span><span class="v">${esc(state.profile?.email || '')}</span></div>
-      <div class="kv"><span class="k">Rôle</span><span class="v">${roleLabel(state.profile?.role)}</span></div>
-      <div class="kv"><span class="k">Société</span><span class="v">${esc(state.settings.company)}</span></div>
+   <div class="narrow">
+    <div class="card me-card" style="cursor:default">
+      <span class="avatar lg">${esc(initials(p.full_name || p.email))}</span>
+      <span class="tx"><b>${esc(p.full_name || '')}</b><span>${esc(p.email || '')}</span></span>
+      <span class="pill brand">${esc(roleLabel(p.role))}</span>
     </div>
-    ${isAdmin() ? `<div class="card pad" style="margin-top:12px">
+    ${canManage() ? `<div class="label-up">Société</div>
+    <div class="card pad">
       <div class="field"><label for="cn">Nom de la société (en-tête des PDF)</label>
         <input type="text" id="cn" value="${esc(state.settings.company)}"></div>
       <div class="field"><label for="dp">Départements / dépôts</label>
         <textarea id="dp" style="min-height:64px">${esc((state.settings.departments || []).join(', '))}</textarea>
         <div class="hint">Séparés par des virgules.</div></div>
       <button class="btn block" id="saveS">Enregistrer</button>
-    </div>` : ''}
-    <div class="card pad" style="margin-top:12px">
+    </div>` : `<div class="label-up">Société</div>
+    <div class="card pad"><div class="facts"><div><span>Société</span><b>${esc(state.settings.company)}</b></div></div></div>`}
+    <div class="label-up">Sécurité</div>
+    <div class="card pad">
       <div class="field"><label for="np">Nouveau mot de passe</label>
-        <input type="password" id="np" minlength="8" placeholder="8 caractères minimum"></div>
-      <button class="btn ghost block" id="pw">Changer le mot de passe</button>
+        <input type="password" id="np" minlength="8" placeholder="8 caractères minimum" autocomplete="new-password"></div>
+      <button class="btn ghost block" id="pw">${icon('lock')} Changer le mot de passe</button>
     </div>
-    <div class="btn-row" style="margin-top:14px">
-      <button class="btn ghost block" id="out">${icon('logout')} Se déconnecter</button>
-    </div>
-    <p class="muted" style="margin-top:18px">Données hébergées chez Supabase, région Paris (eu-west-3).
-    Les photos sont privées : leur accès passe par un lien signé, valable une heure.</p>`,
-    { back: () => back('#/settings'),
+    <button class="btn ghost danger block" id="out" style="margin-top:18px">${icon('logout')} Se déconnecter</button>
+    <p class="about" style="margin-top:16px">Les photos sont privées : leur accès passe par un lien signé, valable une heure.</p>
+   </div>`,
+    { back: () => back('#/settings'), tab: 'settings',
       onMount() {
         const s = $('#saveS');
         if (s) s.onclick = async () => {
