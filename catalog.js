@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Catalogue par défaut : groupes de produits + grilles de critères.
    Les seuils viennent des normes CEE-ONU FFV-42 (avocat) et FFV-45

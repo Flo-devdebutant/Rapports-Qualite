@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Journal des arrivages : l'extraction de l'ERP, une ligne par palette
    reçue depuis le début du mois.

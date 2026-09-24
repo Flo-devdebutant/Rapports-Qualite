@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Saisie d'un rapport (réception ou expédition).
    Choix de conception : une seule page avec des sections repliables

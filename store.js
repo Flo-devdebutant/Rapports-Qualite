@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Stockage local (IndexedDB) + synchronisation.
    Principe : l'application écrit TOUJOURS en local d'abord, puis une
@@ -139,6 +140,9 @@ export async function queue(kind, payload) {
 }
 
 let syncing = false;
+/* Envoi en cours : la mise à jour automatique attend qu'il soit fini
+   avant de recharger la page. */
+export const isSyncing = () => syncing;
 const listeners = new Set();
 export const onSync = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
 const emit = (state) => listeners.forEach(fn => fn(state));

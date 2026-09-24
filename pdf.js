@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Générateur PDF autonome (aucune bibliothèque externe).
    Pourquoi l'écrire à la main plutôt que d'embarquer jsPDF (~350 ko) :

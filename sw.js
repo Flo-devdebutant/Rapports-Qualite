@@ -1,14 +1,19 @@
 /* ------------------------------------------------------------------
-   Service worker : l'application doit s'ouvrir sans réseau.
-   Stratégie volontairement simple —
-     · coquille de l'app (HTML/CSS/JS/icônes) : cache d'abord, mise à
-       jour en arrière-plan ;
+   Service worker : l'application doit s'ouvrir sans réseau, et se
+   mettre à jour toute seule.
+     · fichiers de l'application (HTML/CSS/JS/icônes) : servis depuis le
+       cache de CETTE version, d'un bloc — jamais un mélange de deux
+       versions ;
      · appels Supabase : jamais mis en cache, c'est IndexedDB qui joue
        ce rôle côté application.
-   Changer CACHE ci-dessous suffit à déployer une nouvelle version.
+   Une nouvelle version = VERSION et CACHE changés ci-dessous (chaque
+   livraison le fait). Les appareils ouverts la détectent, la
+   téléchargent, et la page se recharge à un moment sans risque (voir
+   « Mise à jour automatique » dans app.js).
    ------------------------------------------------------------------ */
 
-const CACHE = 'mehadrin-qc-v25';
+const VERSION = '3.3.3';                 // celle de config.js, et du tampon de chaque fichier
+const CACHE = 'mehadrin-qc-v27';
 
 const SHELL = [
   './', './index.html', './manifest.webmanifest', './logo.svg', './app.css',
@@ -19,12 +24,19 @@ const SHELL = [
   './icon-192.png', './icon-512.png', './icon-maskable.png'
 ];
 
-/* `addAll` est tout ou rien : une seule icône manquante et l'ensemble
-   de la coquille reste hors cache — l'application ne s'ouvrait alors
-   pas du tout hors réseau, sans le moindre indice. On met donc chaque
-   entrée en cache séparément et on journalise celles qui échouent. */
+/* Installation.
+   · Première installation : chaque fichier est mis en cache séparément
+     et un échec est seulement journalisé — `addAll`, tout ou rien,
+     laissait l'application sans rien hors réseau pour une icône
+     manquante.
+   · Mise à jour : tout ou rien, au contraire. Un fichier manquant, ou un
+     config.js d'une autre version (dépôt GitHub en cours, fichiers de
+     deux versions mêlés), et l'installation est abandonnée : l'ancienne
+     version continue de tourner, la prochaine vérification réessaiera.
+     Installer une version bancale, c'était la servir telle quelle. */
 self.addEventListener('install', (e) => {
   e.waitUntil((async () => {
+    const updating = !!self.registration.active;
     const c = await caches.open(CACHE);
     const missing = [];
     await Promise.all(SHELL.map(async (u) => {
@@ -34,17 +46,53 @@ self.addEventListener('install', (e) => {
         await c.put(u, r);
       } catch (err) { missing.push(u); }
     }));
-    if (missing.length) console.warn('[sw] non mis en cache :', missing);
-    await self.skipWaiting();
+    if (updating) {
+      /* Chaque fichier de code porte le numéro de sa version (ajouté à la
+         livraison : « Mehadrin QC 3.3.3 »). Un seul fichier d'une autre
+         version, et l'on n'installe rien. */
+      const stamp = `Mehadrin QC ${VERSION}`;
+      const stale = [];
+      for (const u of SHELL.filter(x => /\.(js|css|html)$/.test(x))) {
+        const r = await c.match(u);
+        if (r && !(await r.text()).includes(stamp)) stale.push(u);
+      }
+      if (missing.length || stale.length) {
+        await caches.delete(CACHE);
+        throw new Error(`[sw] ${VERSION} incomplète (${[...missing, ...stale].join(', ')}) — nouvel essai plus tard`);
+      }
+    } else if (missing.length) console.warn('[sw] non mis en cache :', missing);
+    /* La page choisit le moment de passer à la nouvelle version (message
+       « skipWaiting »). Deux exceptions : la toute première installation,
+       et le passage depuis une version d'avant la mise à jour automatique
+       (cache v26 ou plus ancien) — ses pages ne savent pas le demander. */
+    const legacy = (await caches.keys()).some(k => {
+      const m = /^mehadrin-qc-v(\d+)$/.exec(k);
+      return m && +m[1] < 27;
+    });
+    if (!updating || legacy) await self.skipWaiting();
   })());
 });
 
+self.addEventListener('message', (e) => {
+  if (e.data === 'skipWaiting') self.skipWaiting();
+});
+
 self.addEventListener('activate', (e) => {
-  e.waitUntil(
-    caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
-      .then(() => self.clients.claim())
-  );
+  e.waitUntil((async () => {
+    const keys = await caches.keys();
+    const legacy = keys.some(k => {
+      const m = /^mehadrin-qc-v(\d+)$/.exec(k);
+      return m && +m[1] < 27;
+    });
+    await Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)));
+    await self.clients.claim();
+    /* Passage depuis une version sans mise à jour automatique : ses pages
+       ne savent pas se recharger d'elles-mêmes. On les recharge ici, une
+       seule fois — c'est ce qui évite d'avoir à recharger deux fois. */
+    if (legacy) {
+      for (const c of await self.clients.matchAll({ type: 'window' })) c.navigate(c.url).catch(() => {});
+    }
+  })());
 });
 
 self.addEventListener('fetch', (e) => {
@@ -63,22 +111,24 @@ self.addEventListener('fetch', (e) => {
   const isNav = request.mode === 'navigate' ||
     (request.destination === '' && request.headers.get('accept')?.includes('text/html'));
 
-  e.respondWith(
-    caches.match(request).then(hit => {
-      const net = fetch(request)
-        .then(res => {
-          if (res.ok) caches.open(CACHE).then(c => c.put(request, res.clone()));
-          return res;
-        })
-        .catch(async () => {
-          if (hit) return hit;
-          if (isNav) {
-            const shell = await caches.match('./index.html');
-            if (shell) return shell;
-          }
-          return new Response('', { status: 504, statusText: 'Hors ligne' });
-        });
-      return hit || net;
-    })
-  );
+  e.respondWith((async () => {
+    const c = await caches.open(CACHE);
+    /* Cache de cette version d'abord, sans retéléchargement en
+       arrière-plan : avant, chaque fichier servi était aussi
+       redemandé au réseau et rangé dans le cache, si bien qu'une page
+       pouvait charger des fichiers de deux versions différentes. */
+    const hit = (await c.match(request, { ignoreSearch: isNav })) || (isNav ? await c.match('./index.html') : null);
+    if (hit) return hit;
+    try {
+      const res = await fetch(request);
+      if (res.ok && !isNav) c.put(request, res.clone());
+      return res;
+    } catch (err) {
+      if (isNav) {
+        const shell = await c.match('./index.html');
+        if (shell) return shell;
+      }
+      return new Response('', { status: 504, statusText: 'Hors ligne' });
+    }
+  })());
 });

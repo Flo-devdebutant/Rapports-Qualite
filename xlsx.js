@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Export Excel (.xlsx) sans bibliothèque.
    Un .xlsx est un ZIP contenant du XML : on écrit le ZIP en mode

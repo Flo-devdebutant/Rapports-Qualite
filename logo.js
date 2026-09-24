@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Le logo est un SVG (net à toutes les tailles dans l'interface).
    Pour le PDF il faut du JPEG : on le rastérise une fois sur fond

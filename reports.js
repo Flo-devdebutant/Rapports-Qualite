@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* Flux des rapports (liste filtrable) et fiche d'un rapport. */
 
 import { state, shell, groupById, go, back, syncBadge, onLeave, canManage } from './app.js';
@@ -134,7 +135,7 @@ function applyFilters(all) {
         (filters.to && localDay(r.report_date) > filters.to))) return false;
     if (!q) return true;
     return [r.partner_name, r.report_no, r.header?.lot, r.header?.bl, r.header?.order, r.header?.load_id,
-            r.header?.variety, r.header?.origin, countryNames(originList(r.header), 'fr'),
+            r.header?.variety, r.header?.origin, r.header?.packaging_kind, countryNames(originList(r.header), 'fr'),
             r.remarks, groupById(r.product_group_id)?.name]
       .filter(Boolean).join(' ').toLowerCase().includes(q);
   });
@@ -165,10 +166,17 @@ export function reportCard(r, { day = false } = {}) {
   const ref = h.lot ? `Lot ${h.lot}` : h.bl ? `BL ${h.bl}` : '';
   const where = countryNames(originList(h), 'fr') || h.calibre || '';
   const nPh = livePhotos(r).length;
+  /* Le conditionnement (Vrac, Premium, Barquette, Filets) distingue
+     souvent, à lui seul, deux rapports du même client le même jour. Il
+     suit le nom du partenaire, en étiquette : on le lit d'un coup d'œil
+     en parcourant la liste, sans ouvrir chaque rapport. Un nom trop
+     long se raccourcit, l'étiquette jamais — et la ligne du produit et
+     du BL reste entière. */
+  const pack = h.packaging_kind ? `<span class="rp-pack">${esc(h.packaging_kind)}</span>` : '';
   return `<button class="rep rp" data-id="${esc(r.id)}">
     <span class="rp-ic t-${T.id}" title="${esc(T.short)}">${icon(T.icon)}</span>
     <span class="rp-main">
-      <span class="rp-who">${esc(r.partner_name || '—')}</span>
+      <span class="rp-who"><span class="rp-name">${esc(r.partner_name || '—')}</span>${pack}</span>
       <span class="rp-what">${esc([what, ref].filter(Boolean).join(' · ') || T.short)}</span>
       <span class="rp-meta"><span>${esc(T.short)}</span>${r.report_no ? `<span>n° ${esc(r.report_no)}</span>` : ''}<span>${
         day ? hhmm(r.report_date) : fmtDate(r.report_date)}</span>${nPh ? `<span>${nPh} photo${nPh > 1 ? 's' : ''}</span>` : ''}${

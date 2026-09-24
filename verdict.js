@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Calcul du verdict.
    Trois axes indépendants, comme dans le rapport Fruttital :

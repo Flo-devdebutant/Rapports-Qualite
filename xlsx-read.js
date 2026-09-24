@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Lecture d'un classeur Excel (.xlsx) ou d'un fichier CSV, sans
    bibliothèque externe — comme le reste de l'application, qui doit

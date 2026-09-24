@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Connexion à la base partagée.
    Ces deux valeurs ne sont PAS des secrets : la clé « publishable »
@@ -11,5 +12,5 @@ export const CONFIG = {
   supabaseUrl: 'https://tezqfezcziyarxnekxbu.supabase.co',
   supabaseKey: 'sb_publishable_yU0m0o8H70OvAKM6bNQltQ_W0TifL7k',
   appName: 'Mehadrin QC',
-  version: '3.3.1'
+  version: '3.3.3'
 };

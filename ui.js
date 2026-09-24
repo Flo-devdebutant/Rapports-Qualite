@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* Briques d'interface partagées : échappement, icônes, toast,
    feuille modale, confirmation, compression photo. */
 

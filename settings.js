@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* Réglages : produits & critères, partenaires, équipe, compte. */
 
 import { state, shell, go, back, loadRefs, logout, canManage, isAdmin } from './app.js';

@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Mise en page du rapport PDF, calquée sur le modèle reçu de
    Fruttital pour qu'un client déjà habitué à FreshControl retrouve

@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Les trois types de rapport, décrits par leurs différences plutôt que
    par du code conditionnel éparpillé. Ajouter un quatrième type se

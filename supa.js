@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Client Supabase minimal — pourquoi ne pas charger le SDK officiel ?
    L'application doit rester autonome (aucun CDN à charger au

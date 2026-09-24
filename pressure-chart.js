@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Rendu SVG du graphique de pression (écran).
    Le PDF dessine la même géométrie avec ses propres primitives :

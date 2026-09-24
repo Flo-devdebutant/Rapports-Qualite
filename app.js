@@ -1,3 +1,4 @@
+/* Mehadrin QC 3.3.3 */
 /* ------------------------------------------------------------------
    Point d'entrée : amorçage, authentification, routeur, accueil.
    Le routeur tient dans le hash (#/feed, #/report/new/reception…) :
@@ -8,7 +9,7 @@
 import { CONFIG } from './config.js';
 import { auth, db, currentUser } from './supa.js';
 import { local, sync, startAutoSync, onSync, openDB, forgetPhotos, forgetSharedJournal,
-         outboxInfo, retryBlocked, retryBlockedAfterUpdate } from './store.js';
+         outboxInfo, retryBlocked, retryBlockedAfterUpdate, isSyncing } from './store.js';
 import { DEFAULT_GROUPS, DEFAULT_SETTINGS } from './catalog.js';
 import { $, $$, esc, icon, toast, closeSheets, sheet, brandMark, initials } from './ui.js';
 import { logoDataUrl } from './logo.js';
@@ -689,9 +690,130 @@ export async function logout() {
   location.reload();
 }
 
-/* ------------------------- service worker ------------------------- */
+/* ==================== MISE À JOUR AUTOMATIQUE ====================
+   Remplacer les fichiers sur GitHub suffit : chaque appareil où
+   l'application est ouverte s'en aperçoit, télécharge la nouvelle
+   version en arrière-plan, puis recharge la page tout seul — à un
+   moment où cela ne coûte rien :
+     · sur un écran où tout est déjà enregistré (accueil, liste des
+       rapports, fiche d'un rapport, statistiques) — jamais pendant une
+       saisie, dans un éditeur ou les réglages ;
+     · sans feuille ouverte (PDF en préparation, confirmation…), sans
+       envoi en cours, sans champ en cours de frappe ;
+     · quand l'application est en arrière-plan, ou qu'on n'a pas touché
+       l'écran depuis une minute.
+   Jusque-là, la page continue de tourner sur l'ancienne version, servie
+   d'un bloc par l'ancien service worker : jamais un mélange des deux. */
+const UPDATE_EVERY = 3 * 60 * 1000;      // vérification toutes les 3 minutes
+const IDLE_BEFORE_RELOAD = 60 * 1000;    // une minute sans toucher l'écran
+const QUIET_ROUTES = [/^#?\/?$/, /^#\/feed$/, /^#\/report\/[\w-]+$/, /^#\/stats$/];
+let lastInput = Date.now();
+let waitingWorker = null;                // nouvelle version prête, en attente
+let pendingReload = false;               // nouvelle version active, page encore ancienne
+let askedActivation = false, reloading = false;
+let registration = null;
+let checkForUpdate = () => {};
+
+for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart', 'input'])
+  window.addEventListener(ev, () => { lastInput = Date.now(); }, { passive: true, capture: true });
+
+function safeToReload() {
+  if (reloading) return false;
+  if (!QUIET_ROUTES.some(re => re.test(location.hash || '#/'))) return false;
+  if (document.querySelector('.sheet.on')) return false;
+  if (isSyncing()) return false;
+  return document.hidden || Date.now() - lastInput > IDLE_BEFORE_RELOAD;
+}
+
+function reloadForUpdate() {
+  if (reloading) return;
+  reloading = true;
+  /* Même écran, même position dans la page après le rechargement. */
+  try {
+    sessionStorage.setItem('qc.updatedFrom', CONFIG.version);
+    sessionStorage.setItem('qc.updateScroll', JSON.stringify({ hash: location.hash, y: window.scrollY }));
+  } catch (e) {}
+  location.reload();
+}
+
+function applyUpdateIfSafe() {
+  if (!(waitingWorker || pendingReload) || !safeToReload()) return;
+  if (waitingWorker) {
+    /* La nouvelle version prend la main ; la page se recharge dès que
+       c'est fait (controllerchange ci-dessous). */
+    askedActivation = true;
+    waitingWorker.postMessage('skipWaiting');
+    waitingWorker = null;
+    /* Filet : si la nouvelle version n'a pas pris la main (service
+       worker occupé), on redemandera. */
+    setTimeout(() => {
+      if (!reloading && registration?.waiting) { askedActivation = false; waitingWorker = registration.waiting; }
+    }, 15000);
+  } else reloadForUpdate();
+}
+
+async function watchUpdates() {
+  /* Le service worker qui servait la page juste avant le changement : à
+     la toute première visite il n'y en a pas, et sa prise de contrôle
+     n'est pas une mise à jour. Tenu à jour à chaque changement — une
+     page ouverte à la première visite doit, elle aussi, se mettre à
+     jour ensuite. */
+  let lastController = navigator.serviceWorker.controller;
+  let reg;
+  try { reg = await navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }); }
+  catch (e) { return; }
+  registration = reg;
+  const track = (w) => {
+    if (!w) return;
+    const check = () => { if (w.state === 'installed' && navigator.serviceWorker.controller) waitingWorker = w; };
+    check();
+    w.addEventListener('statechange', check);
+  };
+  if (reg.waiting && navigator.serviceWorker.controller) waitingWorker = reg.waiting;
+  track(reg.installing);
+  reg.addEventListener('updatefound', () => track(reg.installing));
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    const before = lastController;
+    lastController = navigator.serviceWorker.controller;
+    if (!before) return;                 // toute première installation : rien à recharger
+    pendingReload = true;
+    /* Activée par cette page : on recharge tout de suite. Activée par un
+       autre onglet : on attend un moment sans risque. */
+    if (askedActivation) reloadForUpdate(); else applyUpdateIfSafe();
+  });
+  let lastCheck = 0;
+  checkForUpdate = () => {
+    if (!navigator.onLine || Date.now() - lastCheck < 60000) return;
+    lastCheck = Date.now();
+    reg.update().catch(() => {});
+  };
+  setInterval(checkForUpdate, UPDATE_EVERY);
+  window.addEventListener('online', checkForUpdate);
+  setInterval(applyUpdateIfSafe, 5000);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) applyUpdateIfSafe();
+  else checkForUpdate();
+});
+
+/* Après une mise à jour : on le dit, une fois, et on revient là où
+   l'on en était dans la page (la liste met un instant à se remplir). */
+try {
+  const from = sessionStorage.getItem('qc.updatedFrom');
+  const pos = JSON.parse(sessionStorage.getItem('qc.updateScroll') || 'null');
+  sessionStorage.removeItem('qc.updatedFrom'); sessionStorage.removeItem('qc.updateScroll');
+  if (from && from !== CONFIG.version) setTimeout(() => toast(`Application mise à jour — version ${CONFIG.version}`, '', { ms: 5000 }), 1800);
+  if (pos && pos.y > 0) {
+    const t0 = lastInput;
+    for (const ms of [700, 1600]) setTimeout(() => {
+      if (lastInput === t0 && location.hash === pos.hash) window.scrollTo(0, pos.y);
+    }, ms);
+  }
+} catch (e) {}
+
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+  window.addEventListener('load', watchUpdates);
 }
 
 boot();
